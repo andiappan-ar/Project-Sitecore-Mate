@@ -10,9 +10,10 @@ from typing import List, Dict, Any, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import your custom context provider logic
+# Ensure jss_context_provider.py is in the same directory or its path is correctly set above
 from jss_context_provider import JSSContextProvider, ContextItem, ContextItemType
 
-# Initialize FastAPI app
+# Initialize FastAPI app - THIS IS THE 'app' THAT UVICORN LOOKS FOR
 app = FastAPI()
 
 # Initialize your JSSContextProvider
@@ -29,7 +30,7 @@ class ContextRequest(BaseModel):
 # does not automatically send the workspacePath.
 # Replace "D:\\YOUR\\JSS\\PROJECT\\ROOT" with the actual root path of your Sitecore JSS project.
 # Ensure correct backslashes (escaped with \\) for Windows paths or use forward slashes.
-JSS_PROJECT_ROOT = "D:\\ARC\\Code\\AI\\Project Mate\\DEV ASSISTANT"
+JSS_PROJECT_ROOT = "D:\\ARC\\Code\\AI\\Project Mate\\DEV ASSISTANT\\ADNOC3.0-HTML-main\\ADNOC3.0-HTML-main\\src"
 # --- END IMPORTANT CONFIGURATION ---
 
 
@@ -72,7 +73,8 @@ async def get_jss_context(request_body: ContextRequest):
         return []
 
     try:
-        context_items = await jss_provider.provide_context_items(determined_workspace_dir)
+        # Pass the full input query to the provider for intelligent context sending
+        context_items = await jss_provider.provide_context_items(determined_workspace_dir, request_body.fullInput)
         
         response_items = [
             {"name": item.name, "description": item.description, "content": item.content}

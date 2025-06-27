@@ -3,6 +3,13 @@ import json
 import re
 from typing import List, Dict, Any, Optional
 import sys
+import shutil # Added for directory removal
+
+# --- New Imports for Vector DB and Embeddings ---
+import chromadb
+import google.generativeai as genai
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+# --- End New Imports ---
 
 # continue.dev specific imports for custom context providers
 try:
@@ -43,8 +50,56 @@ class JSSContextProvider(ContextProvider):
     """
     
     name: str = "Sitecore JSS Project Context"
-    
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.chroma_client = None
+        self.chroma_collection = None
+        self.initialized_db = False # Flag to track if DB and model are initialized
+        # Retrieve API key from environment variable (recommended for security)
+        self.api_key = os.getenv("GOOGLE_API_KEY") 
+        
+        # --- NEW DEBUG PRINT: Check API Key status at initialization ---
+        if self.api_key:
+            print("DEBUG (ContextProvider.__init__): GOOGLE_API_KEY is set.", file=sys.stderr)
+        else:
+            print("WARNING (ContextProvider.__init__): GOOGLE_API_KEY environment variable NOT set.", file=sys.stderr)
+
+
+    async def _init_vector_db_and_model(self, workspace_dir: str):
+        """Initializes the embedding model and ChromaDB client/collection."""
+        print("DEBUG (ContextProvider): Entering _init_vector_db_and_model...", file=sys.stderr)
+        if self.initialized_db:
+            print("DEBUG (ContextProvider): Vector DB already initialized. Skipping.", file=sys.stderr)
+            return
+
+        if not self.api_key:
+            print("ERROR (ContextProvider): Google API Key is missing. Cannot initialize embedding model. Exiting _init_vector_db_and_model.", file=sys.stderr) # More explicit error
+            return 
+
+        try:
+            print("DEBUG (ContextProvider): Attempting genai.configure() and model configuration...", file=sys.stderr) # NEW DEBUG PRINT
+            genai.configure(api_key=self.api_key)
+            print("DEBUG (ContextProvider): Google Embedding model configured (via genai.configure).", file=sys.stderr)
+
+
+            # ChromaDB will persist to a .chroma_db directory in your workspace
+            db_path = os.path.join(workspace_dir, ".chroma_db")
+            os.makedirs(db_path, exist_ok=True) # Ensure directory exists
+            self.chroma_client = chromadb.PersistentClient(path=db_path)
+            self.chroma_collection = self.chroma_client.get_or_create_collection("jss_code_chunks")
+            print(f"DEBUG (ContextProvider): ChromaDB initialized at: {db_path}", file=sys.stderr)
+            self.initialized_db = True
+            print("DEBUG (ContextProvider): Vector DB and embedding model initialization COMPLETE.", file=sys.stderr)
+        except Exception as e:
+            print(f"ERROR (ContextProvider): Failed to initialize vector DB or embedding model: {e}", file=sys.stderr)
+            import traceback # Import for detailed error
+            traceback.print_exc(file=sys.stderr) # Print full traceback
+            self.initialized_db = False # Ensure flag is reset on failure
+
+
     async def provide_context_items(self, workspace_dir: str, full_input_query: str = "") -> List[ContextItem]:
+        print("DEBUG (ContextProvider): Entering provide_context_items...", file=sys.stderr) # New trace point
         context_items: List[ContextItem] = []
         
         if not workspace_dir:
@@ -52,6 +107,39 @@ class JSSContextProvider(ContextProvider):
             return []
 
         print(f"Scanning JSS project at: {workspace_dir}")
+
+        # --- Initialize Vector DB and Embedding Model ---
+        await self._init_vector_db_and_model(workspace_dir)
+        
+        # Check initialization status AFTER attempting initialization
+        if not self.initialized_db:
+            context_items.append(
+                ContextItem(
+                    name="Vector_DB_Status",
+                    content="Vector database and embedding model failed to initialize. Semantic search unavailable.",
+                    description="Indicates a problem with vector database setup (check GOOGLE_API_KEY and terminal logs)."
+                )
+            )
+            # Continue without semantic search capabilities if DB init fails
+        else:
+            # --- Index Codebase if empty ---
+            if self.chroma_collection.count() == 0:
+                print("DEBUG (ContextProvider): ChromaDB collection empty, starting indexing...", file=sys.stderr)
+                await self._index_codebase(workspace_dir)
+                if self.chroma_collection.count() > 0:
+                    print(f"DEBUG (ContextProvider): Indexing complete. Total chunks: {self.chroma_collection.count()}", file=sys.stderr)
+                else:
+                    print("DEBUG (ContextProvider): Indexing attempted, but no chunks were added to ChromaDB.", file=sys.stderr)
+            else:
+                print(f"DEBUG (ContextProvider): ChromaDB collection already contains {self.chroma_collection.count()} chunks. Skipping indexing.", file=sys.stderr)
+            
+            context_items.append(
+                ContextItem(
+                    name="Vector_DB_Status",
+                    content=f"Vector database initialized with {self.chroma_collection.count()} chunks.",
+                    description="Status of the vector database."
+                )
+            )
 
         # --- Detect Project Context (JSS Version, Tailwind) ---
         jss_version = self._detect_jss_version(workspace_dir)
@@ -133,7 +221,23 @@ class JSSContextProvider(ContextProvider):
         elif targeted_component_name:
             print(f"DEBUG (ContextProvider): Targeted component '{targeted_component_name}' not found in scanned paths.", file=sys.stderr)
         else:
-            print(f"DEBUG (ContextProvider): No specific component detected in query to send full code.", file=sys.stderr)
+            print(f"DEBUG (ContextProvider): No specific component detected in query to send full code. Attempting codebase search.", file=sys.stderr)
+            # --- Perform semantic search if no specific component is targeted ---
+            if self.initialized_db and full_input_query and self.chroma_collection.count() > 0:
+                print(f"DEBUG (ContextProvider): Performing semantic search for query: '{full_input_query}'", file=sys.stderr)
+                search_results = await self._query_vector_db(full_input_query)
+                if search_results:
+                    context_items.append(
+                        ContextItem(
+                            name="Codebase_Search_Results",
+                            content="Relevant Codebase Snippets (from semantic search):\n" + "\n---\n".join(search_results),
+                            description="Code snippets semantically related to the user's query from the project codebase."
+                        )
+                    )
+                    print(f"DEBUG (ContextProvider): Added {len(search_results)} codebase search results.", file=sys.stderr)
+                else:
+                    print("DEBUG (ContextProvider): Semantic search found no relevant results.", file=sys.stderr)
+
 
         # --- Standard package.json context ---
         package_json_path = os.path.join(workspace_dir, "package.json")
@@ -288,15 +392,197 @@ class JSSContextProvider(ContextProvider):
         
         return None
 
-    # --- Placeholder for future methods ---
     async def _index_codebase(self, workspace_dir: str):
-        print("Indexing codebase for vector DB (placeholder)...")
+        """
+        Indexes the codebase by chunking files and storing their embeddings in ChromaDB.
+        """
+        if not self.initialized_db or not self.chroma_collection:
+            print("ERROR (ContextProvider): Vector DB or embedding model not initialized. Cannot index codebase.", file=sys.stderr)
+            return
 
-    async def _query_vector_db(self, query_embedding: List[float]) -> List[Dict[str, Any]]:
-        print("Querying vector DB (placeholder)...")
-        return []
+        print("DEBUG (ContextProvider): Starting codebase indexing...", file=sys.stderr)
+        
+        # Configure text splitter for code
+        text_splitter = RecursiveCharacterTextSplitter.from_language(
+            language="ts", # Corrected from "typescript" to "ts"
+            chunk_size=1000,
+            chunk_overlap=100
+        )
+
+        files_to_index = []
+        src_dir = os.path.join(workspace_dir, "src")
+        
+        # List of directories to skip during indexing
+        # Make sure these are relative to the 'src' directory or absolute if preferred
+        excluded_dirs = [
+            os.path.join(workspace_dir, 'node_modules'),
+            os.path.join(workspace_dir, '.next'),
+            os.path.join(workspace_dir, 'dist'),
+            os.path.join(workspace_dir, 'build'),
+            os.path.join(workspace_dir, '.chroma_db'), # Exclude our own DB folder
+            os.path.join(workspace_dir, '.git'),
+            os.path.join(workspace_dir, '.vscode'),
+            os.path.join(workspace_dir, 'out'), # Common Next.js export folder
+            os.path.join(workspace_dir, 'coverage'), # Test coverage reports
+            os.path.join(workspace_dir, 'storybook-static'), # Storybook build output
+        ]
+
+        if os.path.isdir(src_dir):
+            for root, dirs, files in os.walk(src_dir, topdown=True):
+                # Modify 'dirs' in-place to skip directories
+                # This prevents os.walk from descending into excluded directories
+                # Filter out directories whose full path starts with an excluded_dir
+                dirs[:] = [d for d in dirs if not any(os.path.join(root, d).startswith(excluded_dir) for excluded_dir in excluded_dirs)]
+
+                for file in files:
+                    filepath = os.path.join(root, file)
+                    # Also check if the file path itself is within an excluded directory
+                    # This is a redundant check if dirs[:] filtering works, but good as a fallback
+                    if any(excluded_dir in filepath for excluded_dir in excluded_dirs):
+                        print(f"DEBUG (ContextProvider): Skipping excluded file: {filepath}", file=sys.stderr)
+                        continue
+
+                    # Filter for common code/config file extensions
+                    if file.endswith((".tsx", ".jsx", ".ts", ".js", ".css", ".scss", ".json", ".graphql", ".gql", ".yml", ".yaml", ".md")): # Added .md for documentation
+                        files_to_index.append(filepath)
+        
+        indexed_count = 0
+        for filepath in files_to_index:
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                component_name = os.path.splitext(os.path.basename(filepath))[0]
+                # The heuristic for component name extraction currently relies on "src\\components"
+                # This may need adjustment if you have components outside this directory or
+                # if you want to extract names from other file types (e.g., GraphQL files).
+                if "src\\components" in filepath:
+                    refined_name_match = re.search(r'export default\s+(.*?)(?:;|\n|$)', content)
+                    if refined_name_match:
+                        name_candidate = refined_name_match.group(1).strip()
+                        inner_match = re.search(r'\(\)\((.*?)\)', name_candidate)
+                        if inner_match:
+                            component_name_refined = inner_match.group(1).strip()
+                            component_name = component_name_refined
+                        elif re.search(r'^[A-Za-z0-9_]+\s*<[^>]+>\s*\(', name_candidate):
+                            inner_match = re.search(r'\(([^)]+)\)$', name_candidate)
+                            if inner_match:
+                                component_name_refined = inner_match.group(1).strip()
+                                component_name = component_name_refined
+                        else:
+                            if name_candidate and name_candidate[0].isupper():
+                                component_name = name_candidate
+
+
+                chunks = text_splitter.split_text(content)
+                print(f"DEBUG (ContextProvider): Chunked {filepath} into {len(chunks)} parts.", file=sys.stderr)
+
+                chunk_embeddings = []
+                chunk_metadatas = []
+                chunk_ids = []
+
+                for i, chunk in enumerate(chunks):
+                    try:
+                        embedding_response = genai.embed_content( # Removed 'await'
+                            model='text-embedding-004', # Specify the model explicitly
+                            content=chunk
+                        )
+                        embedding = embedding_response['embedding'] # Access the 'embedding' key from the response
+                        
+                        chunk_embeddings.append(embedding)
+                        chunk_metadatas.append({
+                            "filepath": filepath,
+                            "filename": os.path.basename(filepath),
+                            "component_name": component_name,
+                            "chunk_index": i,
+                            "source_type": "code"
+                        })
+                        chunk_ids.append(f"{filepath}_{i}")
+                    except Exception as e:
+                        print(f"ERROR (ContextProvider): Failed to embed chunk {i} from {filepath}: {e}", file=sys.stderr)
+                        import traceback
+                        traceback.print_exc(file=sys.stderr)
+                        continue
+
+                if chunk_embeddings:
+                    self.chroma_collection.add(
+                        documents=chunks,
+                        embeddings=chunk_embeddings,
+                        metadatas=chunk_metadatas,
+                        ids=chunk_ids
+                    )
+                    indexed_count += len(chunk_embeddings)
+                    print(f"DEBUG (ContextProvider): Added {len(chunk_embeddings)} chunks from {filepath} to ChromaDB.", file=sys.stderr)
+
+            except Exception as e:
+                print(f"ERROR (ContextProvider): Failed to read or process file {filepath} for indexing: {e}", file=sys.stderr)
+        
+        print(f"DEBUG (ContextProvider): Finished indexing. Total new chunks added: {indexed_count}", file=sys.stderr)
+
+
+    async def _query_vector_db(self, query_text: str) -> List[str]:
+        """
+        Queries the vector database for semantically similar code snippets.
+        """
+        if not self.initialized_db or not self.chroma_collection: # Removed self.embedding_model from this check
+            print("ERROR (ContextProvider): Vector DB or embedding model not initialized. Cannot query codebase.", file=sys.stderr)
+            return []
+
+        try:
+            query_embedding_response = genai.embed_content( # Removed 'await'
+                model='text-embedding-004', # Specify the model explicitly
+                content=query_text
+            )
+            query_embedding = query_embedding_response['embedding'] # Access the 'embedding' key from the response
+
+            results = self.chroma_collection.query(
+                query_embeddings=[query_embedding],
+                n_results=5, # Retrieve top 5 most relevant results
+                include=['documents', 'metadatas', 'distances']
+            )
+            
+            formatted_results = []
+            for i, doc_content in enumerate(results['documents'][0]):
+                metadata = results['metadatas'][0][i]
+                distance = results['distances'][0][i]
+
+                # Filter out less relevant results based on a threshold (adjust as needed)
+                # Lower distance means higher similarity. Max distance is 1 (cosine similarity)
+                if distance < 0.5: # Example threshold, adjust based on experiment
+                    formatted_results.append(
+                        f"File: {metadata.get('filepath', 'N/A')}\n"
+                        f"Component: {metadata.get('component_name', 'N/A')}\n"
+                        f"Chunk (Distance: {distance:.4f}):\n"
+                        f"```typescript\n{doc_content}\n```"
+                    )
+            return formatted_results
+        except Exception as e:
+            print(f"ERROR (ContextProvider): Failed to query vector DB: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            return []
 
     async def _analyze_component_details(self, component_path: str) -> Dict[str, Any]:
         print(f"Analyzing component details for {component_path} (placeholder)...")
         return {}
 
+    async def _clear_chroma_index(self, workspace_dir: str):
+        """
+        Clears the persistent ChromaDB index from the workspace directory.
+        This forces a full re-index on the next query.
+        """
+        db_path = os.path.join(workspace_dir, ".chroma_db")
+        if os.path.exists(db_path) and os.path.isdir(db_path):
+            print(f"DEBUG (ContextProvider): Clearing ChromaDB index at: {db_path}", file=sys.stderr)
+            try:
+                shutil.rmtree(db_path)
+                self.initialized_db = False # Reset flag so it re-initializes
+                self.chroma_client = None # Clear client to ensure new one is created
+                self.chroma_collection = None # Clear collection
+                print("DEBUG (ContextProvider): ChromaDB index cleared successfully.", file=sys.stderr)
+            except Exception as e:
+                print(f"ERROR (ContextProvider): Failed to clear ChromaDB index: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+        else:
+            print(f"DEBUG (ContextProvider): No ChromaDB index found at {db_path} to clear.", file=sys.stderr)
