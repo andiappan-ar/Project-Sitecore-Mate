@@ -31,7 +31,8 @@ try:
 except ImportError:
     # Fallback for local testing outside of continue.dev's runtime environment
     class ContextProvider:
-        pass
+        def __init__(self, *args, **kwargs): # Modified to accept *args and **kwargs
+            pass
     class ContextItem:
         def __init__(self, name, content, description="", start_line=0, end_line=0):
             self.name = name

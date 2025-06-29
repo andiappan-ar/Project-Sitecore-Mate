@@ -27,63 +27,47 @@ class SitecoreGraphQLClient:
         if not self.sitecore_graphql_endpoint:
             print("WARNING (SitecoreGraphQLClient.__init__): Sitecore GraphQL endpoint is not configured. GraphQL operations will not work.", file=sys.stderr)
 
-    async def execute_query(self, query: str, variables: Optional[Dict] = None, authorization_header: Optional[str] = None) -> Dict:
+    async def execute_query(self, query: str, variables: Optional[Dict[str, Any]] = None, authorization_header: Optional[str] = None) -> Dict[str, Any]:
         """
-        Executes a GraphQL query against the configured Sitecore GraphQL endpoint.
+        Executes a GraphQL query against the Sitecore GraphQL endpoint.
 
         Args:
             query (str): The GraphQL query string.
-            variables (Dict, optional): A dictionary of variables for the GraphQL query.
-            authorization_header (str, optional): The full Authorization header string
-                                                  (e.g., "Bearer <token>").
+            variables (Optional[Dict[str, Any]]): A dictionary of variables for the GraphQL query.
+            authorization_header (Optional[str]): The full Authorization header value (e.g., "Bearer YOUR_TOKEN").
 
         Returns:
-            Dict: The JSON response from the GraphQL endpoint.
+            Dict[str, Any]: The JSON response from the GraphQL endpoint.
 
         Raises:
-            ValueError: If the Sitecore GraphQL endpoint is not configured.
             ConnectionError: If there's a network or connection issue.
-            httpx.HTTPStatusError: If the GraphQL endpoint returns an HTTP error.
-            json.JSONDecodeError: If the response is not valid JSON.
-            Exception: For any other unexpected errors.
+            ValueError: If the GraphQL endpoint returns an HTTP error or invalid JSON.
+            Exception: For other unexpected errors.
         """
         if not self.sitecore_graphql_endpoint:
-            raise ValueError("Sitecore GraphQL endpoint is not configured. Cannot execute query.")
-
-        print(f"DEBUG (SitecoreGraphQLClient.execute_query): Executing GraphQL query to {self.sitecore_graphql_endpoint}", file=sys.stderr)
-        print(f"Query snippet: {query[:100]}...", file=sys.stderr) # Log first 100 chars of query
+            raise ValueError("Sitecore GraphQL endpoint is not configured.")
 
         headers = {
-            "Content-Type": "application/json",
+            "Content-Type": "application/json"
         }
-        
-        # --- IMPORTANT: Dynamically set Authorization header if provided ---
         if authorization_header:
             headers["Authorization"] = authorization_header
-            print("DEBUG (SitecoreGraphQLClient.execute_query): Using provided Authorization header.", file=sys.stderr)
-        else:
-            print("WARNING (SitecoreGraphQLClient.execute_query): No Authorization header provided for GraphQL request.", file=sys.stderr)
-        # --- End Dynamic Authorization ---
-
-        request_payload = {"query": query}
+        
+        request_body = {"query": query}
         if variables:
-            request_payload["variables"] = variables
+            request_body["variables"] = variables
 
         try:
+            print(f"DEBUG (SitecoreGraphQLClient.execute_query): Sending GraphQL request to {self.sitecore_graphql_endpoint} with query excerpt: {query[:100]}...", file=sys.stderr)
             async with httpx.AsyncClient(verify=self.verify_ssl) as client:
-                response = await client.post(
-                    self.sitecore_graphql_endpoint,
-                    json=request_payload,
-                    headers=headers, # <-- NOW USES THE DYNAMIC HEADERS
-                    timeout=30.0 # Increased timeout for network requests
-                )
-                response.raise_for_status() # Raise for 4xx/5xx HTTP errors
+                response = await client.post(self.sitecore_graphql_endpoint, headers=headers, json=request_body)
+                response.raise_for_status() # Raise an exception for 4xx or 5xx responses
 
                 graphql_response = response.json()
 
-                # Check for GraphQL-specific errors in the response body (even if HTTP status is 200 OK)
-                if "errors" in graphql_response:
-                    print(f"ERROR (SitecoreGraphQLClient.execute_query): GraphQL errors in response: {json.dumps(graphql_response['errors'], indent=2)}", file=sys.stderr)
+                # Sitecore GraphQL often returns 200 OK even with GraphQL errors in the body
+                if 'errors' in graphql_response and graphql_response['errors']:
+                    print(f"WARNING (SitecoreGraphQLClient.execute_query): GraphQL errors in response: {json.dumps(graphql_response['errors'], indent=2)}", file=sys.stderr)
                     return {"data": graphql_response.get("data"), "errors": graphql_response["errors"]}
                 
                 print("DEBUG (SitecoreGraphQLClient.execute_query): GraphQL query executed successfully.", file=sys.stderr)
