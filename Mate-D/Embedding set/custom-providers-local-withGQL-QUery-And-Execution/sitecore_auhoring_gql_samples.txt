@@ -1,0 +1,74 @@
+#****-------------- [start] Get any template details by template id  --------------****
+# Get any template details by template id
+query {
+  itemTemplate(
+    where: {
+      # Template Item Id in Sitecore content tree
+      templateId: "85cda4459dac401db6ce170a2b33e1f9" # Replace this template ID from user prompt , Template id should be in lowercase and hyphens and braces should be sanitized
+    }
+  ) {    
+    name
+    templateId
+    # Below will return all the fields and thier type
+    fields {
+      nodes {
+        name
+      }
+    }
+  }
+}
+#****-------------- [end] Get any template details by template id --------------****
+#****-------------- [start] Get component or rendering details by component name --------------****
+# Get component or rendering details by component name
+query {
+  search(
+    query: {
+      searchStatement: {
+        criteria: [
+          # Replace the user prompt with the input
+          {
+            field: "_name"
+            criteriaType: CONTAINS
+            value: "graph" # Replace with your actual component or rendering "name" , if you want to find all component or rendering fill with "*"
+            operator: MUST
+          }
+          # Keep the criteria as it is
+          {
+            field: "_template"
+            criteriaType: EXACT
+            value: "04646a89996f4ee7878affdbf1f0ef0d" # Search criteria for the JsonRendering template
+            operator: MUST
+          }
+        ]
+      }
+      paging: { pageSize: 1000 }
+    }
+  ) {
+    totalCount
+    results {
+      name
+      innerItem {
+        # Basic string fields of the item
+        name # Item's name (string)
+        itemId # Unique identifier of the item (string)
+        # Item's full content tree path (string)
+        path
+        DatasourceTemplate: field(name: "Datasource Template") {
+          value
+        }
+        ParametersTemplate: field(name: "Parameters Template") {
+          value
+        }
+        RenderingContentsResolver: field(name: "Rendering Contents Resolver") {
+          value
+        }
+        ComponentQuery: field(name: "ComponentQuery") {
+          value
+        }
+      }
+    }
+  }
+}
+
+
+#****-------------- [end] Get component or rendering details by component name --------------****
