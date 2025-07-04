@@ -1,2 +1,2 @@
-# Project-Sitecore-Mate
-Project-Sitecore-Mate
+# Sitecore-Mate-Chat-Search
+Sitecore-Mate-Chat-Search
