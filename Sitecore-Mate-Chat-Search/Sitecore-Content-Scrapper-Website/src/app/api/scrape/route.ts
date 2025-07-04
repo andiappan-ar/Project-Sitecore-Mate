@@ -1,257 +1,236 @@
 // src/app/api/scrape/route.ts
-import { NextResponse } from 'next/server';
-import { processAndIndexContent } from '../../../index/process-index'; // Import the new indexing function
 
-interface ScrapeRequest {
-    envId: number;
-    environment: {
-        id: number;
-        name: string;
-        url: string; // Sitecore GraphQL endpoint URL
-        apiKey: string; // Sitecore API Key (sc_apikey)
-        status: string;
-        rootPath: string; // Sitecore root path for this environment
-        languages: string[]; // List of languages to scrape for this environment
-    };
-}
+import { NextRequest, NextResponse } from 'next/server';
+import { processAndIndexContent } from '@/index/process-index';
 
-// Define the GraphQL query
-const GET_PAGE_CONTENT_QUERY = `
-query GetPageContent($path: String!, $language: String!) {
-  item(path: $path, language: $language) {
-    id
-    name
-    displayName
-    path
-    url
-    hasChildren
-    children {
-      name
-      path
-    }
-    ownFields: fields(ownFields: false, excludeStandardFields: true) {
-      __typename
-      name
-      value
-    }
-    sharedLayout: field(name: "__Renderings") {
-      name
-      value
-    }
-    finalLayout: field(name: "__Final Renderings") {
-      name
-      value
-    }
-  }
-}
-`;
+// In-memory status tracking object. This will hold the logs and status for each scraping job.
+const scrapingStatus: { [key: string]: { status: string; log: string[] } } = {};
 
-// Define the structure for a scraped item to be returned to the UI
-interface ScrapedItem {
-    id: string;
-    name: string;
-    path: string;
-    url: string;
-    language: string;
-    content: string; // Aggregated text content from relevant fields
-    childrenPaths?: { name: string; path: string }[];
+// Helper function to recursively extract text from various field types
+function extractTextFromFields(fields: any[]): string {
+  let combinedText = '';
+  if (!fields) return '';
+
+  fields.forEach((field) => {
+    if (field && field.value) {
+      combinedText += `${field.name}: ${field.value}\n`;
+    }
+  });
+  return combinedText;
 }
 
 /**
- * Fetches content for a given Sitecore item using GraphQL.
- * @param apiUrl The Sitecore GraphQL endpoint URL.
- * @param apiKey The Sitecore API Key.
- * @param path The Sitecore item path.
- * @param language The language version to fetch.
- * @returns The item data from the GraphQL response, or null if an error occurs.
+ * Scrapes a Sitecore item using a GraphQL query.
  */
-async function fetchSitecoreContent(
-    apiUrl: string,
-    apiKey: string,
-    path: string,
-    language: string
-): Promise<any | null> {
-    try {
-        const response = await fetch(apiUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'sc_apikey': apiKey, // Sitecore API Key in header
-            },
-            body: JSON.stringify({
-                query: GET_PAGE_CONTENT_QUERY,
-                variables: { path, language },
-            }),
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error(`GraphQL request failed for path: ${path}, language: ${language}, status: ${response.status}, error: ${errorText}`);
-            return null;
-        }
-
-        const jsonResponse = await response.json();
-
-        if (jsonResponse.errors) {
-            console.error(`GraphQL errors for path: ${path}, language: ${language}`, jsonResponse.errors);
-            return null;
-        }
-
-        return jsonResponse.data?.item || null;
-
-    } catch (error: any) {
-        console.error(`Error fetching Sitecore content for path: ${path}, language: ${language}`, error);
-        return null;
-    }
-}
-
-/**
- * Recursively scrapes Sitecore content, extracts relevant data, and sends it via stream.
- * @param currentPath The current Sitecore item path to scrape.
- * @param language The language version.
- * @param sitecoreApiUrl The Sitecore GraphQL endpoint URL.
- * @param sitecoreApiKey The Sitecore API Key.
- * @param controller The ReadableStreamDefaultController to enqueue data.
- * @param encoder The TextEncoder to encode data.
- * @param depth Current recursion depth for logging indentation.
- */
-async function scrapeSitecoreItem(
-    currentPath: string,
-    language: string,
-    sitecoreApiUrl: string,
-    sitecoreApiKey: string,
-    controller: ReadableStreamDefaultController, // Corrected type to ReadableStreamDefaultController
-    encoder: TextEncoder, // Encoder for stream
-    depth: number = 0
+async function scrapeGraphQL(
+  itemPath: string,
+  language: string,
+  graphqlEndpoint: string,
+  apiKey: string
 ) {
-    const indent = '  '.repeat(depth);
-    console.log(`${indent}Scraping: ${currentPath} (Language: ${language})`);
+  const query = `
+    query GetItemData($itemPath: String!, $language: String!) {
+      item(path: $itemPath, language: $language) {
+        id
+        name
+        displayName
+        path
+        url 
+        hasChildren
+        children {
+          name
+          path
+        }
+        ownFields: fields(ownFields: true, excludeStandardFields: true) {
+          __typename
+          name
+          value
+        }
+        sharedLayout: field(name: "__Renderings") {
+          name
+          value
+        }
+        finalLayout: field(name: "__Final Renderings") {
+          name
+          value
+        }
+      }
+    }
+  `;
 
-    const item = await fetchSitecoreContent(sitecoreApiUrl, sitecoreApiKey, currentPath, language);
+  try {
+    const response = await fetch(graphqlEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'sc_apikey': apiKey,
+      },
+      body: JSON.stringify({
+        query,
+        variables: { itemPath, language },
+      }),
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`GraphQL request failed with status ${response.status}: ${errorText}`);
+      return null;
+    }
+
+    const jsonResponse = await response.json();
+    const item = jsonResponse.data?.item;
 
     if (!item) {
-        console.log(`${indent}  Failed to retrieve item or item is null for path: ${currentPath}`);
-        // Send an error event for the UI
-        controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ path: currentPath, language, message: 'Failed to retrieve item.' })}\n\n`));
-        return;
+      if (jsonResponse.errors) {
+        console.error('--- GraphQL Errors from Sitecore ---');
+        console.error(JSON.stringify(jsonResponse.errors, null, 2));
+      }
+      return null;
     }
 
-    // Extract page details
-    const pageName = item.name;
-    const pageUrl = item.url;
-    const itemId = item.id;
-    const itemPath = item.path;
-
-    // Read ownFields: name/value if text field then do the indexing
-    let pageContent = '';
-    if (item.ownFields && Array.isArray(item.ownFields)) {
-        item.ownFields.forEach((field: any) => {
-            if (field.value) {
-                switch (field.__typename) {
-                    case 'TextField':
-                    case 'RichTextField':     // Added RichTextField
-                    case 'MultiLineTextField': // Added MultiLineTextField
-                    case 'NumberField':
-                    case 'DateField':
-                        pageContent += `${field.name}: ${field.value}\n`;
-                        break;
-                    case 'LinkField': // Extract text and URL from LinkField
-                        if (field.text) pageContent += `${field.name} Text: ${field.text}\n`;
-                        if (field.url) pageContent += `${field.name} URL: ${field.url}\n`;
-                        break;
-                    case 'ImageField': // Extract alt text from ImageField
-                        if (field.alt) pageContent += `${field.name} Alt Text: ${field.alt}\n`;
-                        break;
-                    // You can add more cases for other field types that contain valuable text
-                    // For example, if you have custom field types that store text.
-                }
-            }
-        });
+    let content = extractTextFromFields(item.ownFields);
+    if (item.sharedLayout && item.sharedLayout.value) {
+        content += `${item.sharedLayout.name}: ${item.sharedLayout.value}\n`;
+    }
+    if (item.finalLayout && item.finalLayout.value) {
+        content += `${item.finalLayout.name}: ${item.finalLayout.value}\n`;
     }
 
-    // Create a ScrapedItem object
-    const scrapedItem: ScrapedItem = {
-        id: itemId,
-        name: pageName,
-        path: itemPath,
-        url: pageUrl,
-        language: language,
-        content: pageContent.trim(), // Ensure content is trimmed
-        childrenPaths: item.children?.map((child: any) => ({ name: child.name, path: child.path })) || []
+    return {
+      id: item.id.replace(/-/g, ''),
+      name: item.name,
+      path: item.path,
+      url: item.url,
+      language: language,
+      content: content.trim(),
+      children: item.hasChildren ? item.children.map((child: any) => ({ name: child.name, path: child.path })) : [],
     };
-
-    // Send the scraped item to the frontend immediately
-    controller.enqueue(encoder.encode(`event: update\ndata: ${JSON.stringify(scrapedItem)}\n\n`));
-
-    // Log the extracted details (for server-side debugging)
-    console.log(`${indent}  Page Name: ${pageName}`);
-    console.log(`${indent}  Page URL: ${pageUrl}`);
-    console.log(`${indent}  Page Content (from text fields - first 100 chars):\n${indent}    ${scrapedItem.content.substring(0, 100).replace(/\n/g, `\n${indent}    `)}...`);
-
-    // --- Call the indexing logic here ---
-    // This will now process the scraped item for your vector DB.
-    await processAndIndexContent(scrapedItem);
-
-    // Check for children and recurse
-    const hasValidLayout = (item.sharedLayout?.value && item.sharedLayout.value.trim() !== '') ||
-                           (item.finalLayout?.value && item.finalLayout.value.trim() !== '');
-
-    if (item.hasChildren && item.children && Array.isArray(item.children) && item.children.length > 0 && hasValidLayout) {
-        console.log(`${indent}  Has children and valid layout. Descending...`);
-        for (const child of item.children) {
-            await scrapeSitecoreItem(child.path, language, sitecoreApiUrl, sitecoreApiKey, controller, encoder, depth + 1);
-        }
-    } else {
-        console.log(`${indent}  No children, children array is empty, or no valid layout found. Not descending.`);
-    }
+  } catch (error) {
+    console.error('Error during GraphQL fetch:', error);
+    return null;
+  }
 }
 
-// Main API route handler
-export async function POST(request: Request) {
-    const { envId, environment }: ScrapeRequest = await request.json();
-    console.log(`Received scrape request for environment ID: ${envId}`, environment);
 
-    if (!environment || !environment.url || !environment.apiKey || !environment.rootPath || !environment.languages || environment.languages.length === 0) {
-        return NextResponse.json({ error: 'Missing environment details (URL, API Key, Root Path, or Languages).', message: 'Scraping failed.' }, { status: 400 });
+/**
+ * Recursively scrapes a Sitecore item and its children.
+ */
+async function scrapeSitecoreItem(
+  path: string,
+  language: string,
+  environment: any,
+  apiKey: string,
+  environmentId: string
+) {
+  const log = (message: string) => {
+    console.log(message);
+    if (scrapingStatus[environmentId]) {
+      scrapingStatus[environmentId].log.push(message);
+    }
+  };
+
+  log(`Scraping: ${path} (Language: ${language})`);
+
+  try {
+    const itemData = await scrapeGraphQL(path, language, environment.url, apiKey);
+
+    if (itemData) {
+      log(`  Page Name: ${itemData.name}`);
+      log(`  Page URL: ${itemData.url}`);
+      if (itemData.content) {
+        log(`  Page Content (from text fields - first 100 chars):\n    ${itemData.content.substring(0, 100).replace(/\n/g, '\n    ')}`);
+        await processAndIndexContent(itemData, environment);
+      } else {
+        log('  No content fields found to index.');
+      }
+
+      if (itemData.children && itemData.children.length > 0) {
+        log('  Has children to scrape. Descending...');
+        for (const child of itemData.children) {
+          await scrapeSitecoreItem(child.path, language, environment, apiKey, environmentId);
+        }
+      } else {
+        log('  No children to scrape.');
+      }
+    } else {
+      log(`  No data returned from GraphQL for path: ${path}`);
+    }
+  } catch (error: any) {
+    const errorMessage = `  Error scraping ${path}: ${error.message}`;
+    log(errorMessage);
+    throw new Error(errorMessage);
+  }
+}
+
+/**
+ * FIX: Handles GET requests to fetch the status of a scraping job.
+ * This function was missing, causing the 405 Method Not Allowed error.
+ */
+export async function GET(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+  const environmentId = searchParams.get('environmentId');
+
+  if (!environmentId) {
+    return NextResponse.json({ error: 'Environment ID is required' }, { status: 400 });
+  }
+
+  const status = scrapingStatus[environmentId];
+
+  if (!status) {
+    return NextResponse.json({ error: 'Scraping process not found for this environment ID.' }, { status: 404 });
+  }
+
+  return NextResponse.json(status);
+}
+
+
+/**
+ * Handles POST requests to start the scraping process.
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const { environment } = await request.json();
+    const environmentId = environment.id;
+
+    if (!environmentId) {
+      return NextResponse.json({ error: 'Environment ID is required' }, { status: 400 });
     }
 
-    const initialPath = environment.rootPath;
-    const languagesToScrape = environment.languages;
+    if (scrapingStatus[environmentId] && scrapingStatus[environmentId].status === 'In Progress') {
+        return NextResponse.json({ message: 'A scraping process is already in progress for this environment.' }, { status: 409 });
+    }
 
-    // Create a ReadableStream to send data to the client
-    const encoder = new TextEncoder();
-    const readableStream = new ReadableStream({
-        async start(controller) {
-            try {
-                for (const language of languagesToScrape) {
-                    console.log(`Starting deep scrape for environment: ${environment.name}, Root: ${initialPath}, Language: ${language}`);
-                    // Send a "start" event for each language
-                    controller.enqueue(encoder.encode(`event: start\ndata: ${JSON.stringify({ language, rootPath: initialPath })}\n\n`));
+    console.log(`Received scrape request for environment ID: ${environmentId}`, environment);
 
-                    await scrapeSitecoreItem(initialPath, language, environment.url, environment.apiKey, controller, encoder);
+    scrapingStatus[environmentId] = {
+      status: 'In Progress',
+      log: [`Scraping started for environment: ${environment.name}`],
+    };
 
-                    // Send a "language_complete" event
-                    controller.enqueue(encoder.encode(`event: language_complete\ndata: ${JSON.stringify({ language, rootPath: initialPath })}\n\n`));
-                    console.log(`Finished deep scrape for environment: ${environment.name}, Root: ${initialPath}, Language: ${language}`);
-                }
-                // Send a "complete" event when all scraping is done
-                // Ensure the data is a valid JSON string
-                controller.enqueue(encoder.encode(`event: complete\ndata: ${JSON.stringify({ message: 'All scraping complete.' })}\n\n`));
-                controller.close(); // Close the stream when done
-            } catch (error: any) {
-                console.error(`Error during deep scraping for environment ${environment.name}:`, error);
-                // Send an error event and close the stream
-                controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ message: `Scraping failed: ${error.message}` })}\n\n`));
-                controller.close();
-            }
-        },
+    (async () => {
+      try {
+        for (const lang of environment.languages) {
+          await scrapeSitecoreItem(environment.rootPath, lang, environment, environment.apiKey, environmentId);
+        }
+        scrapingStatus[environmentId].status = 'Completed';
+        scrapingStatus[environmentId].log.push('Scraping completed successfully.');
+        console.log(`Deep scraping finished for environment: ${environment.name}`);
+      } catch (error: any) {
+        const errorMessage = `Error during deep scraping for environment ${environment.name}: ${error.message}`;
+        console.error(errorMessage, error);
+        scrapingStatus[environmentId].status = 'Failed';
+        scrapingStatus[environmentId].log.push('Scraping failed.');
+        scrapingStatus[environmentId].log.push(errorMessage);
+      }
+    })();
+
+    return NextResponse.json({
+      message: 'Scraping process started.',
+      environmentId: environmentId,
     });
-
-    return new Response(readableStream, {
-        headers: {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache, no-transform',
-            'Connection': 'keep-alive',
-        },
-    });
+  } catch (error: any) {
+    console.error('Error in /api/scrape:', error);
+    return NextResponse.json({ error: 'Failed to start scraping process', details: error.message }, { status: 500 });
+  }
 }

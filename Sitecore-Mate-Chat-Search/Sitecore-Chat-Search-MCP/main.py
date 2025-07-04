@@ -11,7 +11,8 @@ import httpx # For making asynchronous HTTP requests to the Gemini API
 
 # Import ChromaDB
 import chromadb
-# from chromadb.utils import embedding_functions # Not needed if providing embeddings directly
+# Corrected import for Collection type
+from chromadb import Collection # Changed from chromadb.api.models.collections import Collection
 
 # Import SentenceTransformer for actual embeddings
 from sentence_transformers import SentenceTransformer
@@ -19,12 +20,12 @@ from sentence_transformers import SentenceTransformer
 # --- Configuration ---
 # Path where ChromaDB will store its data files
 CHROMA_PERSIST_DIRECTORY = os.path.join(os.path.dirname(__file__), ".chroma_db_data")
-# Collection name in ChromaDB
-CHROMA_COLLECTION_NAME = "nextjs_scraped_content"
+# Base name for ChromaDB collections (will be suffixed with environment ID)
+CHROMA_COLLECTION_BASE_NAME = "sitecore_content"
 
 # Gemini API Configuration (hardcoded for POC as requested)
 # IMPORTANT: For production, always use environment variables or a secrets management system.
-GEMINI_API_KEY = "AIzaSyDs1WL8kzWQjfridIaq2DrjDRIwsgtYqg0" # Hardcoded API Key
+GEMINI_API_KEY = "" # Hardcoded API Key
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 # New: Define a maximum acceptable distance for retrieved results.
@@ -41,16 +42,15 @@ app = FastAPI(
 )
 
 # --- ChromaDB Client and Embedding Model Initialization ---
-chroma_client = None
-chroma_collection = None
-embedding_model: Optional[SentenceTransformer] = None # Declare type for clarity
+chroma_client: Optional[chromadb.PersistentClient] = None
+embedding_model: Optional[SentenceTransformer] = None
 
 def initialize_chromadb_and_model():
-    """Initializes the ChromaDB client, collection, and embedding model."""
-    global chroma_client, chroma_collection, embedding_model
+    """Initializes the ChromaDB client and embedding model."""
+    global chroma_client, embedding_model
 
-    if chroma_client and chroma_collection and embedding_model:
-        print("ChromaDB and Embedding Model already initialized.", file=sys.stderr)
+    if chroma_client and embedding_model:
+        print("ChromaDB Client and Embedding Model already initialized.", file=sys.stderr)
         return
 
     try:
@@ -65,19 +65,31 @@ def initialize_chromadb_and_model():
         embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         print("SentenceTransformer model loaded successfully.", file=sys.stderr)
 
-        # 3. Get or create the ChromaDB collection
-        # IMPORTANT: Set embedding_function=None because we are providing embeddings directly
-        chroma_collection = chroma_client.get_or_create_collection(
-            name=CHROMA_COLLECTION_NAME,
-            embedding_function=None
-        )
-        print(f"ChromaDB: Collection '{CHROMA_COLLECTION_NAME}' ready.", file=sys.stderr)
-
     except Exception as e:
-        print(f"ERROR: Failed to initialize ChromaDB or Embedding Model: {e}", file=sys.stderr)
+        print(f"ERROR: Failed to initialize ChromaDB Client or Embedding Model: {e}", file=sys.stderr)
         raise # Re-raise to prevent the app from starting if initialization fails
 
-# Initialize ChromaDB and embedding model on startup
+# Helper to get or create a ChromaDB collection for a specific environment
+def get_chroma_collection(environment_id: str) -> Collection:
+    """
+    Gets or creates a ChromaDB collection for a given environment ID.
+    Each environment will have its own collection to segregate data.
+    """
+    if not chroma_client:
+        raise HTTPException(status_code=500, detail="ChromaDB Client not initialized.")
+    
+    collection_name = f"{CHROMA_COLLECTION_BASE_NAME}_{environment_id}"
+    print(f"ChromaDB: Getting/Creating collection '{collection_name}'...", file=sys.stderr)
+    # IMPORTANT: Set embedding_function=None because we are providing embeddings directly
+    collection = chroma_client.get_or_create_collection(
+        name=collection_name,
+        embedding_function=None
+    )
+    print(f"ChromaDB: Collection '{collection_name}' ready.", file=sys.stderr)
+    return collection
+
+
+# Initialize ChromaDB client and embedding model on startup
 @app.on_event("startup")
 async def startup_event():
     try:
@@ -96,26 +108,31 @@ class ScrapedItem(BaseModel):
     language: str
     content: str
     childrenPaths: Optional[List[Dict[str, str]]] = None
+    environmentId: str # New field to associate content with an environment
 
 # --- Data Model for Incoming Query ---
 class QueryRequest(BaseModel):
     query: str
+    environmentId: str # New field to specify which environment to query
     n_results: int = 5 # Default to top 5 results
 
 # --- Endpoint to receive and index content ---
 @app.post("/index-content")
 async def index_content(item: ScrapedItem):
     """
-    Receives a scraped content item, generates embeddings, and indexes it into ChromaDB.
+    Receives a scraped content item, generates embeddings, and indexes it into
+    the ChromaDB collection associated with its environmentId.
     """
-    if not chroma_collection or not embedding_model:
-        raise HTTPException(status_code=500, detail="ChromaDB collection or Embedding Model not initialized.")
+    if not embedding_model:
+        raise HTTPException(status_code=500, detail="Embedding Model not initialized.")
+    
+    # Get the specific collection for this environment
+    chroma_collection = get_chroma_collection(item.environmentId)
 
-    print(f"Received item for indexing: {item.id} ({item.language}) - {item.path}", file=sys.stderr)
+    print(f"Received item for indexing: {item.id} ({item.language}) - {item.path} into collection {chroma_collection.name}", file=sys.stderr)
 
     try:
         # Generate actual embedding for the content using the loaded model
-        # Use asyncio.to_thread to run the blocking model.encode operation
         embedding = await asyncio.to_thread(embedding_model.encode, item.content, convert_to_tensor=False)
         embedding_list = embedding.tolist() # Convert numpy array to list for JSON serialization
 
@@ -125,6 +142,7 @@ async def index_content(item: ScrapedItem):
             "path": item.path,
             "url": item.url,
             "language": item.language,
+            "environmentId": item.environmentId # Store environment ID in metadata
         }
 
         # --- Add/Update document in ChromaDB ---
@@ -134,7 +152,7 @@ async def index_content(item: ScrapedItem):
             ids=[f"{item.id}-{item.language}"], # Use a combined ID for uniqueness across languages
             embeddings=[embedding_list] # Provide the generated numerical embedding
         )
-        print(f"Successfully indexed item {item.id} ({item.language}) into ChromaDB.", file=sys.stderr)
+        print(f"Successfully indexed item {item.id} ({item.language}) into ChromaDB collection {chroma_collection.name}.", file=sys.stderr)
         return {"status": "success", "message": f"Item {item.id} ({item.language}) indexed successfully."}
 
     except Exception as e:
@@ -145,13 +163,17 @@ async def index_content(item: ScrapedItem):
 @app.post("/query-content")
 async def query_content(request: QueryRequest):
     """
-    Receives a query string, generates its embedding, performs a similarity search in ChromaDB,
+    Receives a query string and environmentId, generates its embedding,
+    performs a similarity search in the specified ChromaDB collection,
     and returns relevant content.
     """
-    if not chroma_collection or not embedding_model:
-        raise HTTPException(status_code=500, detail="ChromaDB collection or Embedding Model not initialized.")
+    if not embedding_model:
+        raise HTTPException(status_code=500, detail="Embedding Model not initialized.")
 
-    print(f"Received query: '{request.query}' (n_results: {request.n_results})", file=sys.stderr)
+    # Get the specific collection for this environment
+    chroma_collection = get_chroma_collection(request.environmentId)
+
+    print(f"Received query: '{request.query}' for environment '{request.environmentId}' (n_results: {request.n_results})", file=sys.stderr)
 
     try:
         # Generate actual embedding for the incoming query
@@ -182,39 +204,42 @@ async def query_content(request: QueryRequest):
                 else:
                     print(f"DEBUG: Skipping result due to high distance ({distance}): {metadata.get('path', 'N/A')}", file=sys.stderr)
         
-        print(f"ChromaDB: Found {len(formatted_results)} results for query (after distance filter).", file=sys.stderr)
+        print(f"ChromaDB: Found {len(formatted_results)} results for query in collection {chroma_collection.name} (after distance filter).", file=sys.stderr)
         return {"status": "success", "results": formatted_results}
 
     except Exception as e:
-        print(f"ERROR querying ChromaDB: {e}", file=sys.stderr)
+        print(f"ERROR querying ChromaDB collection {chroma_collection.name}: {e}", file=sys.stderr)
         raise HTTPException(status_code=500, detail=f"Failed to query content: {e}")
 
 # --- Endpoint to generate answer using LLM ---
 class GenerateAnswerRequest(BaseModel):
     query: str
+    environmentId: str # New field to specify which environment to query
     n_results: int = 5 # Number of documents to retrieve for context
 
 @app.post("/generate-answer")
 async def generate_answer(request: GenerateAnswerRequest):
     """
-    Receives a query, retrieves relevant context from ChromaDB,
-    and generates an answer using the Gemini 2.0 Flash LLM.
+    Receives a query and environmentId, retrieves relevant context from the
+    specified ChromaDB collection, and generates an answer using the Gemini 2.0 Flash LLM.
     """
-    if not chroma_collection or not embedding_model:
-        raise HTTPException(status_code=500, detail="ChromaDB collection or Embedding Model not initialized.")
+    if not embedding_model:
+        raise HTTPException(status_code=500, detail="Embedding Model not initialized.")
 
-    print(f"Received request to generate answer for query: '{request.query}'", file=sys.stderr)
+    # Get the specific collection for this environment
+    chroma_collection = get_chroma_collection(request.environmentId)
+
+    print(f"Received request to generate answer for query: '{request.query}' from environment '{request.environmentId}'", file=sys.stderr)
 
     try:
         # 1. Retrieve relevant context from ChromaDB
-        # Reuse the query logic to get relevant documents
         query_embedding = await asyncio.to_thread(embedding_model.encode, request.query, convert_to_tensor=False)
         query_embedding_list = query_embedding.tolist()
 
         retrieval_results = chroma_collection.query(
             query_embeddings=[query_embedding_list],
             n_results=request.n_results,
-            include=['documents', 'metadatas', 'distances'] # Include distances to format results like query_content
+            include=['documents', 'metadatas', 'distances']
         )
 
         # Format retrieved context for sending back to Next.js and for LLM prompt
@@ -223,7 +248,7 @@ async def generate_answer(request: GenerateAnswerRequest):
         if retrieval_results and retrieval_results['documents'] and retrieval_results['documents'][0]:
             for i, doc_content in enumerate(retrieval_results['documents'][0]):
                 metadata = retrieval_results['metadatas'][0][i]
-                distance = retrieval_results['distances'][0][i] # Get distance here
+                distance = retrieval_results['distances'][0][i]
                 
                 # Apply distance threshold filter for LLM context
                 if distance <= MAX_DISTANCE_THRESHOLD:
@@ -233,10 +258,10 @@ async def generate_answer(request: GenerateAnswerRequest):
                         "distance": distance
                     })
 
-                    # Removed 'Path' from the context provided to the LLM
+                    # Modified to exclude 'Path' and focus on URL and content
                     context_documents_for_llm.append(
                         f"--- Document Title: {metadata.get('name', 'unknown')} --- "
-                        f"URL: {metadata.get('url', 'unknown')}\n" # Include URL here
+                        f"URL: {metadata.get('url', 'unknown')}\n"
                         f"{doc_content}\n"
                     )
                 else:
@@ -247,7 +272,6 @@ async def generate_answer(request: GenerateAnswerRequest):
 
         # 2. Construct prompt for LLM
         if not context_str:
-            # Modified prompt to explicitly state "RAG no related results found"
             llm_prompt = (
                 f"RAG: No related results found. Based on the query: '{request.query}', "
                 f"please provide a general knowledge answer if possible. If you cannot provide a general knowledge answer, "
@@ -258,7 +282,7 @@ async def generate_answer(request: GenerateAnswerRequest):
             llm_prompt = (
                 f"You are a helpful assistant. Use the following retrieved information to answer the question. "
                 f"If the answer is not available in the provided context, state that you cannot answer based on the given information. "
-                f"For each piece of information you use, please cite the 'Document Title' and 'URL' from which it came.\n\n" # Removed 'Path' from citation instruction
+                f"For each piece of information you use, please cite the 'Document Title' and 'URL' from which it came.\n\n"
                 f"Context:\n{context_str}\n\n"
                 f"Question: {request.query}\n\n"
                 f"Answer:"
@@ -285,7 +309,6 @@ async def generate_answer(request: GenerateAnswerRequest):
             headers = {
                 "Content-Type": "application/json"
             }
-            # The API key is now hardcoded, so we always include it directly
             gemini_url_with_key = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
 
             response = await client.post(gemini_url_with_key, headers=headers, json=payload, timeout=30.0)
@@ -298,7 +321,7 @@ async def generate_answer(request: GenerateAnswerRequest):
                 generated_text = gemini_result['candidates'][0]['content']['parts'][0].get('text', "No text part found in Gemini response.")
             
             print("Gemini LLM response received.", file=sys.stderr)
-            return {"status": "success", "answer": generated_text, "retrieved_context": retrieved_context_formatted} # Return retrieved context for debugging/display
+            return {"status": "success", "answer": generated_text, "retrieved_context": retrieved_context_formatted}
 
     except httpx.RequestError as exc:
         print(f"ERROR: Network or request error during Gemini API call: {exc}", file=sys.stderr)

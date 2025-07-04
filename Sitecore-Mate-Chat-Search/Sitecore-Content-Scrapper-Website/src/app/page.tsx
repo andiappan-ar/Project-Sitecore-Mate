@@ -1,330 +1,264 @@
-// app/page.tsx
-// This is the main frontend page for your Next.js application using the App Router.
+'use client';
 
-'use client'; // This directive makes the component a Client Component
+import { useState, useEffect, useRef } from 'react';
+import Link from 'next/link'; // Import Link for navigation
 
-import React, { useState } from 'react';
-import { startScrapingApi, updateIndexesApi } from '../graphql/scraping'; // Import the new functions
-
-// Define types for Sitecore environment
-interface SitecoreEnvironment {
-    id: number;
-    name: string;
-    url: string;
-    apiKey: string;
-    status: string;
-    rootPath: string;
-    languages: string[];
+// Define the structure of an Environment
+interface Environment {
+  id: string;
+  name: string;
+  url: string;
+  apiKey: string;
+  rootPath: string;
+  languages: string[];
+  status?: string; // Optional status from the backend
 }
 
-// Define the structure for a scraped item (must match the backend and scraping.ts)
-interface ScrapedItem {
-    id: string;
-    name: string;
-    path: string;
-    url: string;
-    language: string;
-    content: string;
-    childrenPaths?: { name: string; path: string }[];
+// Define the structure for UI messages
+interface UiMessage {
+    type: 'success' | 'error' | 'info';
+    text: string;
 }
 
-// Define specific data types for each type of scrape update event
-interface ScrapeStartData {
-    language: string;
-    rootPath: string;
-}
+export default function Home() {
+  // State for managing environments
+  const [environments, setEnvironments] = useState<Environment[]>([]);
+  
+  // State for the "Add Environment" form, now with default values from .env
+  const [newEnv, setNewEnv] = useState<Omit<Environment, 'id'>>({
+    name: process.env.NEXT_PUBLIC_SITECORE_NAME || 'dev',
+    url: process.env.NEXT_PUBLIC_SITECORE_GRAPHQL_URL || '',
+    apiKey: process.env.NEXT_PUBLIC_SITECORE_API_KEY || '',
+    rootPath: process.env.NEXT_PUBLIC_SITECORE_ROOT_PATH || '',
+    languages: (process.env.NEXT_PUBLIC_SITECORE_LANGUAGES || 'en').split(','),
+  });
 
-interface ScrapeLanguageCompleteData {
-    language: string;
-}
+  // State for managing scraping status and logs
+  const [scrapingEnvironmentId, setScrapingEnvironmentId] = useState<string | null>(null);
+  const [scrapingStatus, setScrapingStatus] = useState<string | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+  
+  // State for showing user-friendly messages
+  const [uiMessage, setUiMessage] = useState<UiMessage | null>(null);
 
-interface ScrapeCompleteErrorData {
-    message: string;
-}
+  // Ref to hold the interval ID for polling
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // NEW: Ref for the log display container to enable auto-scrolling
+  const logContainerRef = useRef<HTMLPreElement>(null);
 
-// Define a union type for the 'data' parameter in handleScrapeUpdate
-type ScrapeUpdateData = ScrapedItem | ScrapeStartData | ScrapeLanguageCompleteData | ScrapeCompleteErrorData;
+  // Load environments from localStorage on initial render
+  useEffect(() => {
+    const storedEnvs = localStorage.getItem('environments');
+    if (storedEnvs) {
+      setEnvironments(JSON.parse(storedEnvs));
+    }
+  }, []);
 
+  // NEW: useEffect to automatically scroll the log container to the bottom
+  useEffect(() => {
+    if (logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [logs]); // This effect runs every time the logs array changes
 
-const Home: React.FC = () => {
-    // State for managing Sitecore environments with default values from environment variables
-    const [environments, setEnvironments] = useState<SitecoreEnvironment[]>([]);
-    const [newEnvName, setNewEnvName] = useState<string>('dev'); // Default value
-    const [newEnvUrl, setNewEnvUrl] = useState<string>(process.env.NEXT_PUBLIC_SITECORE_GRAPHQL_URL || ''); // Read from .env
-    const [newEnvApiKey, setNewEnvApiKey] = useState<string>(process.env.NEXT_PUBLIC_SITECORE_API_KEY || ''); // Read from .env
-    const [newEnvRootPath, setNewEnvRootPath] = useState<string>(process.env.NEXT_PUBLIC_SITECORE_ROOT_PATH || ''); // Read from .env
-    const [newEnvLanguages, setNewEnvLanguages] = useState<string>(process.env.NEXT_PUBLIC_SITECORE_LANGUAGES || 'en'); // Read from .env
+  // Function to display a temporary message in the UI
+  const showUiMessage = (type: 'success' | 'error' | 'info', text: string) => {
+    setUiMessage({ type, text });
+    setTimeout(() => setUiMessage(null), 5000); // Clear message after 5 seconds
+  };
 
-    // State to store scraped data for display (now updated incrementally)
-    const [scrapedData, setScrapedData] = useState<ScrapedItem[] | null>(null);
-    const [isScrapingLoading, setIsScrapingLoading] = useState<boolean>(false);
-    const [currentScrapingStatus, setCurrentScrapingStatus] = useState<string>(''); // For live status messages
-    const [uiMessage, setUiMessage] = useState<{ type: 'success' | 'error' | 'info', text: string } | null>(null); // For general UI messages
+  // Function to save environments to localStorage
+  const saveEnvironments = (envs: Environment[]) => {
+    localStorage.setItem('environments', JSON.stringify(envs));
+    setEnvironments(envs);
+  };
 
-    // Function to display a temporary message in the UI
-    const showUiMessage = (type: 'success' | 'error' | 'info', text: string) => {
-        setUiMessage({ type, text });
-        setTimeout(() => setUiMessage(null), 5000); // Clear message after 5 seconds
-    };
+  // Handler for input changes in the "Add Environment" form
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    if (name === 'languages') {
+      setNewEnv({ ...newEnv, languages: value.split(',').map(lang => lang.trim()) });
+    } else {
+      setNewEnv({ ...newEnv, [name]: value });
+    }
+  };
 
-    // Function to add a new Sitecore environment
-    const addEnvironment = (): void => {
-        if (newEnvName && newEnvUrl && newEnvApiKey && newEnvRootPath && newEnvLanguages) {
-            const languagesArray = newEnvLanguages.split(',').map(lang => lang.trim()).filter(lang => lang.length > 0);
-            if (languagesArray.length === 0) {
-                showUiMessage('error', 'Please enter at least one language.');
-                return;
-            }
+  // Handler for adding a new environment
+  const handleAddEnvironment = () => {
+    if (newEnv.name && newEnv.url && newEnv.apiKey && newEnv.rootPath) {
+      const newEnvironmentWithId: Environment = { ...newEnv, id: Date.now().toString() };
+      saveEnvironments([...environments, newEnvironmentWithId]);
+      // Reset only some fields, keeping others for convenience
+      setNewEnv({ ...newEnv, name: '', rootPath: '' }); 
+      showUiMessage('success', 'Environment added successfully!');
+    } else {
+      showUiMessage('error', 'Please fill all fields.');
+    }
+  };
 
-            setEnvironments([...environments, {
-                id: Date.now(), // Simple unique ID for frontend display
-                name: newEnvName,
-                url: newEnvUrl,
-                apiKey: newEnvApiKey,
-                status: 'Not Indexed',
-                rootPath: newEnvRootPath,
-                languages: languagesArray,
-            }]);
-            setNewEnvName('');
-            setNewEnvUrl('');
-            setNewEnvApiKey('');
-            setNewEnvRootPath('');
-            setNewEnvLanguages('en');
-            showUiMessage('success', 'Environment added successfully!');
-        } else {
-            showUiMessage('error', 'Please fill in all environment details.');
+  // Handler for deleting an environment
+  const handleDeleteEnvironment = (id: string) => {
+    saveEnvironments(environments.filter(env => env.id !== id));
+    showUiMessage('info', 'Environment removed.');
+  };
+
+  // Function to fetch the status and logs from the backend
+  const fetchStatus = async (environmentId: string) => {
+    try {
+      const response = await fetch(`/api/scrape?environmentId=${environmentId}`);
+      if (response.ok) {
+        const data = await response.json();
+        setScrapingStatus(data.status);
+        setLogs(data.log);
+
+        // Stop polling if the job is done
+        if (data.status === 'Completed' || data.status === 'Failed') {
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+          }
+          if (data.status === 'Completed') {
+              showUiMessage('success', 'Scraping process completed successfully.');
+          } else {
+              showUiMessage('error', 'Scraping process failed. Check logs for details.');
+          }
+          setScrapingEnvironmentId(null); // Reset for the next job
         }
-    };
-
-    // Function to initiate scraping via the new API utility with live updates
-    const startScraping = async (envId: number): Promise<void> => {
-        const targetEnv = environments.find(e => e.id === envId);
-        if (!targetEnv) return;
-
-        setIsScrapingLoading(true); // Set loading state
-        setScrapedData([]); // Initialize as empty array for incremental updates
-        setCurrentScrapingStatus('Starting scraping process...');
-        setUiMessage(null); // Clear any previous UI messages
-
-        // Update status for the specific environment in the list
-        setEnvironments(prevEnvs => prevEnvs.map(env =>
-            env.id === envId ? { ...env, status: 'Indexing in progress...' } : env
-        ));
-
-        // Define the callback for live updates
-        const handleScrapeUpdate = (
-            type: 'update' | 'start' | 'language_complete' | 'complete' | 'error',
-            data: ScrapeUpdateData // Changed from 'any' to a union type
-        ) => {
-            if (type === 'update') {
-                // Add new scraped item to the list
-                setScrapedData(prev => [...(prev || []), data as ScrapedItem]);
-                setCurrentScrapingStatus(`Scraped: ${(data as ScrapedItem).path} (${(data as ScrapedItem).language})`);
-            } else if (type === 'start') {
-                const startData = data as ScrapeStartData;
-                setCurrentScrapingStatus(`Starting language: ${startData.language} from ${startData.rootPath}`);
-            } else if (type === 'language_complete') {
-                const langCompleteData = data as ScrapeLanguageCompleteData;
-                setCurrentScrapingStatus(`Finished language: ${langCompleteData.language}`);
-            } else if (type === 'complete') {
-                const completeData = data as ScrapeCompleteErrorData; // Reusing for message property
-                setCurrentScrapingStatus('Scraping complete!');
-                setIsScrapingLoading(false);
-                setEnvironments(prevEnvs => prevEnvs.map(env =>
-                    env.id === envId ? { ...env, status: 'Indexed' } : env
-                ));
-                showUiMessage('success', completeData.message || 'Scraping process completed successfully.');
-            } else if (type === 'error') {
-                const errorData = data as ScrapeCompleteErrorData;
-                setCurrentScrapingStatus(`Error during scraping: ${errorData.message}`);
-                setIsScrapingLoading(false);
-                setEnvironments(prevEnvs => prevEnvs.map(env =>
-                    env.id === envId ? { ...env, status: 'Scraping Failed' } : env
-                ));
-                showUiMessage('error', `Scraping error: ${errorData.message}`);
-            }
-        };
-
-        // Call the SSE-enabled scraping API
-        await startScrapingApi(targetEnv, handleScrapeUpdate);
-    };
-
-    // Function to update indexes via the new API utility (remains non-streaming)
-    const updateIndexes = async (envId: number): Promise<void> => {
-        const targetEnv = environments.find(e => e.id === envId);
-        if (!targetEnv) return;
-
-        setUiMessage(null); // Clear any previous UI messages
-
-        // Update status to "in progress" immediately
-        setEnvironments(prevEnvs => prevEnvs.map(env =>
-            env.id === envId ? { ...env, status: 'Updating index...' } : env
-        ));
-
-        const result = await updateIndexesApi(targetEnv);
-
-        if (result.success) {
-            setEnvironments(prevEnvs => prevEnvs.map(env =>
-                env.id === envId ? { ...env, status: 'Indexed (Updated)' } : env
-            ));
-            showUiMessage('success', `Index update initiated for environment ID: ${envId}. Message: ${result.message}`);
-        } else {
-            setEnvironments(prevEnvs => prevEnvs.map(env =>
-                env.id === envId ? { ...env, status: 'Update Failed' } : env
-            ));
-            showUiMessage('error', `Index update failed for environment ID: ${envId}. Error: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error fetching scrape status:', error);
+       if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
         }
+    }
+  };
+  
+  // useEffect to manage the polling interval
+  useEffect(() => {
+    if (scrapingEnvironmentId) {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      intervalRef.current = setInterval(() => fetchStatus(scrapingEnvironmentId), 2000);
+    }
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
     };
+  }, [scrapingEnvironmentId]);
 
-    return (
-        <div className="min-h-screen bg-gray-100 font-sans antialiased text-gray-800 p-4 flex flex-col items-center">
-            <div className="max-w-4xl w-full bg-white shadow-lg rounded-xl p-8 space-y-8">
-                <h1 className="text-4xl font-extrabold text-center text-indigo-700 mb-8">
-                    Sitecore Content Scrapper MCP (Next.js App Router)
-                </h1>
+  // Handler for the "Scrape" button
+  const handleScrape = async (environment: Environment) => {
+    setLogs([`Starting scrape for ${environment.name}...`]);
+    setScrapingStatus('In Progress');
+    setScrapingEnvironmentId(environment.id);
+    showUiMessage('info', `Scraping process initiated for ${environment.name}.`);
 
-                {/* Navigation Link to Scraped Content Log */}
-                <div className="text-center mb-4">
-                    <a href="#scraped-content-log" className="text-indigo-600 hover:underline text-lg font-medium">
-                        Jump to Scraped Content Log
-                    </a>
-                </div>
+    try {
+      const response = await fetch('/api/scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ environment }),
+      });
 
-                {/* General UI Message Display */}
-                {uiMessage && (
-                    <div className={`p-3 rounded-lg text-center font-medium ${
-                        uiMessage.type === 'success' ? 'bg-green-100 text-green-800' :
-                        uiMessage.type === 'error' ? 'bg-red-100 text-red-800' :
-                        'bg-blue-100 text-blue-800'
-                    }`}>
-                        {uiMessage.text}
-                    </div>
-                )}
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to start scraping process.');
+      }
+      
+      console.log('Scraping process started successfully.');
 
-                {/* Sitecore Environment Management Section */}
-                <section className="bg-gradient-to-br from-blue-50 to-indigo-100 p-6 rounded-lg shadow-md border border-blue-200">
-                    <h2 className="text-2xl font-bold text-indigo-600 mb-4">Manage Sitecore Environments</h2>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                        <input
-                            type="text"
-                            placeholder="Environment Name (e.g., 'Dev Site')"
-                            className="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition duration-200"
-                            value={newEnvName}
-                            onChange={(e) => setNewEnvName(e.target.value)}
-                        />
-                        <input
-                            type="url"
-                            placeholder="Sitecore GraphQL URL (e.g., 'https://your-site.com/sitecore/api/graph/edge')"
-                            className="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition duration-200"
-                            value={newEnvUrl}
-                            onChange={(e) => setNewEnvUrl(e.target.value)}
-                        />
-                        <input
-                            type="text"
-                            placeholder="Sitecore API Key"
-                            className="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition duration-200"
-                            value={newEnvApiKey}
-                            onChange={(e) => setNewEnvApiKey(e.target.value)}
-                        />
-                         <input
-                            type="text"
-                            placeholder="Sitecore Root Path (e.g., '/sitecore/content/my-site/home')"
-                            className="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition duration-200"
-                            value={newEnvRootPath}
-                            onChange={(e) => setNewEnvRootPath(e.target.value)}
-                        />
-                        <input
-                            type="text"
-                            placeholder="Languages (e.g., 'en,fr,de')"
-                            className="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition duration-200"
-                            value={newEnvLanguages}
-                            onChange={(e) => setNewEnvLanguages(e.target.value)}
-                        />
-                    </div>
-                    <button
-                        onClick={addEnvironment}
-                        className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-300 ease-in-out transform hover:scale-105 shadow-lg"
-                    >
-                        Add Environment
-                    </button>
+    } catch (error: any) {
+      console.error('Error starting scrape:', error);
+      showUiMessage('error', `Error: ${error.message}`);
+      setScrapingStatus('Failed');
+       if (intervalRef.current) clearInterval(intervalRef.current);
+       setScrapingEnvironmentId(null);
+    }
+  };
 
-                    <div className="mt-8 space-y-4">
-                        {environments.length === 0 ? (
-                            <p className="text-center text-gray-500 italic">No environments added yet.</p>
-                        ) : (
-                            environments.map(env => (
-                                <div key={env.id} className="flex flex-col md:flex-row items-center justify-between bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                                    <div className="flex-1 mb-2 md:mb-0 md:mr-4">
-                                        <h3 className="text-lg font-semibold text-gray-900">{env.name}</h3>
-                                        <p className="text-sm text-gray-600 truncate">{env.url}</p>
-                                        <p className="text-sm text-gray-500">Root Path: <span className="font-medium text-gray-700">{env.rootPath}</span></p>
-                                        <p className="text-sm text-gray-500">Languages: <span className="font-medium text-gray-700">{env.languages.join(', ')}</span></p>
-                                        <p className="text-sm text-gray-500">Status: <span className={`font-medium ${env.status.includes('Indexed') ? 'text-green-600' : 'text-yellow-600'}`}>{env.status}</span></p>
-                                    </div>
-                                    <div className="flex space-x-2">
-                                        <button
-                                            onClick={() => startScraping(env.id)}
-                                            className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition duration-200 text-sm font-medium shadow-md"
-                                            disabled={isScrapingLoading} // Disable button while loading
-                                        >
-                                            {isScrapingLoading ? (
-                                                <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                                </svg>
-                                            ) : (
-                                                'Start Scraping'
-                                            )}
-                                        </button>
-                                        <button
-                                            onClick={() => updateIndexes(env.id)}
-                                            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition duration-200 text-sm font-medium shadow-md"
-                                        >
-                                            Update Indexes
-                                        </button>
-                                    </div>
-                                </div>
-                            ))
-                        )}
-                    </div>
-                </section>
-
-                {/* Scraped Data Display Section */}
-                <section id="scraped-content-log" className="bg-gradient-to-br from-gray-50 to-gray-100 p-6 rounded-lg shadow-md border border-gray-200 mt-8">
-                    <h2 className="text-2xl font-bold text-gray-700 mb-4">Scraped Content Log</h2>
-                    {isScrapingLoading && (
-                        <p className="text-center text-indigo-500 mb-4 flex items-center justify-center">
-                            <svg className="animate-spin h-5 w-5 mr-3 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            {currentScrapingStatus || 'Scraping in progress...'}
-                        </p>
-                    )}
-                    {scrapedData && scrapedData.length > 0 ? (
-                        <div className="space-y-4 max-h-96 overflow-y-auto bg-white p-4 rounded-lg border border-gray-300 shadow-inner">
-                            {scrapedData.map((item) => (
-                                <div key={item.id + item.language} className="bg-blue-50 p-3 rounded-md border border-blue-200">
-                                    <h4 className="font-semibold text-blue-800 text-lg">{item.name} ({item.language})</h4>
-                                    <p className="text-sm text-gray-700 break-all">Path: {item.path}</p>
-                                    <p className="text-sm text-gray-700 break-all">URL: <a href={item.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{item.url}</a></p>
-                                    <p className="text-sm text-gray-700 mt-2">Content:</p>
-                                    <pre className="bg-gray-100 p-2 rounded-md text-xs overflow-auto max-h-24 whitespace-pre-wrap">{item.content || 'No text content found.'}</pre>
-                                    {item.childrenPaths && item.childrenPaths.length > 0 && (
-                                        <p className="text-xs text-gray-600 mt-1">Children: {item.childrenPaths.map(c => c.name).join(', ')}</p>
-                                    )}
-                                </div>
-                            ))}
-                        </div>
-                    ) : (
-                        !isScrapingLoading && <p className="text-center text-gray-500 italic">No scraped data to display yet. Start scraping an environment!</p>
-                    )}
-                </section>
-            </div>
-            {/* The following CSS is assumed to be handled by your global stylesheet (globals.css) */}
-            {/* and Tailwind's PostCSS setup, along with font imports in layout.tsx or globals.css. */}
+  return (
+    <main className="container mx-auto p-4 sm:p-6 lg:p-8 font-sans bg-gray-50 min-h-screen">
+      <div className="max-w-4xl w-full mx-auto">
+        <h1 className="text-4xl font-extrabold text-center text-indigo-700 mb-2">Sitecore Content Scraper</h1>
+        <p className="text-center text-gray-500 mb-6">Manage environments and scrape content for vector indexing.</p>
+        
+        {/* NEW: Navigation Link */}
+        <div className="text-center mb-6">
+            <Link href="/query" className="text-blue-600 hover:underline text-lg font-medium">
+                Go to Query Page &rarr;
+            </Link>
         </div>
-    );
-};
 
-export default Home;
+        {/* NEW: General UI Message Display */}
+        {uiMessage && (
+            <div className={`p-3 mb-6 rounded-lg text-center font-medium ${
+                uiMessage.type === 'success' ? 'bg-green-100 text-green-800' :
+                uiMessage.type === 'error' ? 'bg-red-100 text-red-800' :
+                'bg-blue-100 text-blue-800'
+            }`}>
+                {uiMessage.text}
+            </div>
+        )}
+
+        {/* Add New Environment Form */}
+        <div className="bg-gradient-to-br from-blue-50 to-indigo-100 p-6 rounded-lg shadow-md mb-8 border border-blue-200">
+          <h2 className="text-2xl font-bold text-indigo-600 mb-4">Add New Environment</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <input type="text" name="name" value={newEnv.name} onChange={handleInputChange} placeholder="Environment Name (e.g., 'dev')" className="p-3 border rounded-md focus:ring-2 focus:ring-blue-500" />
+            <input type="text" name="url" value={newEnv.url} onChange={handleInputChange} placeholder="GraphQL Endpoint URL" className="p-3 border rounded-md focus:ring-2 focus:ring-blue-500" />
+            <input type="text" name="apiKey" value={newEnv.apiKey} onChange={handleInputChange} placeholder="Sitecore API Key" className="p-3 border rounded-md focus:ring-2 focus:ring-blue-500" />
+            <input type="text" name="rootPath" value={newEnv.rootPath} onChange={handleInputChange} placeholder="Root Item Path" className="p-3 border rounded-md focus:ring-2 focus:ring-blue-500" />
+            <input type="text" name="languages" value={newEnv.languages.join(', ')} onChange={handleInputChange} placeholder="Languages (comma-separated)" className="p-3 border rounded-md focus:ring-2 focus:ring-blue-500 col-span-1 md:col-span-2" />
+          </div>
+          <button onClick={handleAddEnvironment} className="mt-4 px-6 py-2 bg-indigo-600 text-white font-semibold rounded-md hover:bg-indigo-700 transition-colors w-full md:w-auto">
+            Add Environment
+          </button>
+        </div>
+
+        {/* Environments List */}
+        <div className="space-y-4">
+          <h2 className="text-2xl font-semibold text-gray-700 mb-4">Configured Environments</h2>
+          {environments.length === 0 ? (
+                <p className="text-center text-gray-500 italic">No environments added yet.</p>
+            ) : environments.map(env => (
+            <div key={env.id} className="bg-white p-4 rounded-lg shadow-md flex flex-col md:flex-row justify-between items-start md:items-center">
+              <div className="flex-1 mb-4 md:mb-0">
+                <h3 className="text-xl font-bold text-gray-800">{env.name}</h3>
+                <p className="text-sm text-gray-500 truncate">URL: {env.url}</p>
+                <p className="text-sm text-gray-500">Root: {env.rootPath}</p>
+                <p className="text-sm text-gray-500">Languages: {env.languages.join(', ')}</p>
+              </div>
+              <div className="flex space-x-2">
+                <button onClick={() => handleScrape(env)} disabled={scrapingStatus === 'In Progress'} className="px-4 py-2 bg-green-600 text-white font-semibold rounded-md hover:bg-green-700 transition-colors disabled:bg-gray-400 flex items-center justify-center w-36">
+                  {scrapingEnvironmentId === env.id ? (
+                      <>
+                        <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Scraping...
+                      </>
+                  ) : 'Scrape Content'}
+                </button>
+                <button onClick={() => handleDeleteEnvironment(env.id)} className="px-4 py-2 bg-red-600 text-white font-semibold rounded-md hover:bg-red-700 transition-colors">
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        
+        {/* Log Display Area */}
+        {logs.length > 0 && (
+          <div className="mt-8 bg-gray-900 text-white font-mono p-4 rounded-lg shadow-lg">
+              <h3 className="text-lg font-semibold mb-2 border-b border-gray-700 pb-2">Scraping Log ({scrapingStatus || 'Waiting...'})</h3>
+              {/* Attach the ref to the pre element */}
+              <pre ref={logContainerRef} className="overflow-x-auto whitespace-pre-wrap text-sm h-64 overflow-y-scroll">
+                  {logs.join('\n')}
+              </pre>
+          </div>
+        )}
+      </div>
+    </main>
+  );
+}

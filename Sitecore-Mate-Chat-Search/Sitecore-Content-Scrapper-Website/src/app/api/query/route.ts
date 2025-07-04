@@ -5,6 +5,7 @@ import { NextResponse } from 'next/server';
 interface QueryRequestPayload {
     query: string;
     n_results?: number;
+    environmentId: string; // Added environmentId to the incoming request
 }
 
 interface QueryResultItem {
@@ -15,6 +16,7 @@ interface QueryResultItem {
         path: string;
         url: string;
         language: string;
+        environmentId: string; // Added environmentId to metadata
         [key: string]: any; // Allow other metadata properties
     };
     distance: number;
@@ -32,8 +34,15 @@ const PYTHON_QUERY_SERVICE_URL = process.env.PYTHON_INDEXING_SERVICE_URL
     : "http://localhost:8001/query-content";
 
 export async function POST(request: Request) {
-    const { query, n_results }: QueryRequestPayload = await request.json();
-    console.log(`Next.js API: Received query request for: "${query}" (n_results: ${n_results})`);
+    const { query, n_results, environmentId }: QueryRequestPayload = await request.json(); // Destructure environmentId
+    console.log(`Next.js API: Received query request for: "${query}" (n_results: ${n_results}) from environment: ${environmentId}`);
+
+    if (!environmentId) { // Basic validation
+        return NextResponse.json(
+            { status: "error", message: "Environment ID is required for query." },
+            { status: 400 }
+        );
+    }
 
     try {
         const response = await fetch(PYTHON_QUERY_SERVICE_URL, {
@@ -41,7 +50,7 @@ export async function POST(request: Request) {
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ query, n_results }),
+            body: JSON.stringify({ query, n_results, environmentId }), // Pass environmentId
         });
 
         if (!response.ok) {

@@ -1,59 +1,70 @@
 // src/index/process-index.ts
 
-// No longer need fs or path as we're sending to a service
-// import * as fs from 'fs';
-// import * as path from 'path';
-
-// Define the structure for a scraped item (must match the backend and frontend)
-interface ScrapedItem {
+/**
+ * Sends a scraped content item to the Python backend for processing and indexing.
+ * @param item The scraped item data.
+ * @param environment The environment configuration.
+ * @returns The response from the indexing service.
+ */
+export async function processAndIndexContent(
+  item: {
     id: string;
     name: string;
     path: string;
     url: string;
     language: string;
-    content: string; // Aggregated text content from relevant fields
-    childrenPaths?: { name: string; path: string }[];
-}
+    content: string;
+    children: any[]; // Consider defining a more specific type for children
+  },
+  environment: any // Consider defining a more specific type for environment
+) {
+  // Log the details of the item being sent to the backend.
+  console.log('--- Sending Item to Python Indexing Service ---');
+  console.log(`  ID: ${item.id.replace(/-/g, '').toUpperCase()}`);
+  console.log(`  Name: ${item.name}`);
+  console.log(`  Path: ${item.path}`);
+  console.log(`  Language: ${item.language}`);
+  console.log(`  Content Length: ${item.content.length} characters`);
 
-// Define the URL of your Python FastAPI indexing service
-// Ensure this matches the host and port where your FastAPI server is running
-// You might want to put this in an environment variable for different deployments
-const PYTHON_INDEXING_SERVICE_URL = process.env.PYTHON_INDEXING_SERVICE_URL || "http://localhost:8001/index-content";
+  try {
+    // Create the request body object to be sent.
+    const requestBody = {
+      id: item.id.replace(/-/g, '').toUpperCase(),
+      name: item.name,
+      path: item.path,
+      url: item.url,
+      language: item.language,
+      content: item.content,
+      childrenPaths: (item.children || []).map((child) => ({ name: child.name, path: child.path })),
+      environmentId: environment.id,
+    };
 
+    // DEBUGGING STEP: Log the request body to the console before sending.
+    // This will confirm exactly what data is being sent to the Python server.
+    console.log('--- Request Body to be Sent ---');
+    console.log(JSON.stringify(requestBody, null, 2));
 
-/**
- * Processes a scraped content item by sending it to a Python FastAPI service for indexing.
- * @param item The scraped content item to process and send.
- * @returns A promise that resolves when the indexing process is complete.
- */
-export async function processAndIndexContent(item: ScrapedItem): Promise<void> {
-    console.log(`--- Sending Item to Python Indexing Service ---`);
-    console.log(`  ID: ${item.id}`);
-    console.log(`  Name: ${item.name}`);
-    console.log(`  Path: ${item.path}`);
-    console.log(`  Language: ${item.language}`);
-    console.log(`  Content Length: ${item.content.length} characters`);
+    // Send a POST request to the Python backend's /index-content endpoint.
+    const response = await fetch(`${process.env.NEXT_PUBLIC_PYTHON_API_URL}/index-content`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
 
-    try {
-        const response = await fetch(PYTHON_INDEXING_SERVICE_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(item), // Send the scraped item directly
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Indexing service failed: ${response.status} - ${errorText}`);
-        }
-
-        const result = await response.json();
-        console.log(`--- Indexing Service Response for Item ${item.id}:`, result);
-        console.log(`--- Successfully Sent Item: ${item.id} to Python Indexing Service ---`);
-
-    } catch (error: any) {
-        console.error(`Error sending item ${item.id} to indexing service:`, error);
-        // Handle error, e.g., retry, log to a failure queue
+    // Check if the request was successful.
+    if (!response.ok) {
+      // If not, read the error message from the response and throw an error.
+      const errorText = await response.text();
+      throw new Error(`Indexing service failed: ${response.status} - ${errorText}`);
     }
+
+    // Parse the JSON response from the backend.
+    const result = await response.json();
+    return result;
+  } catch (error) {
+    // Log any errors that occur during the fetch operation.
+    console.error(`Error sending item ${item.id.replace(/-/g, '').toUpperCase()} to indexing service:`, error);
+    // Re-throw the error so it can be handled by the calling function.
+    throw error;
+  }
 }

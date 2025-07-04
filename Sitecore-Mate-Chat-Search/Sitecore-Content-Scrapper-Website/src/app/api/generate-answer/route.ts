@@ -5,6 +5,7 @@ import { NextResponse } from 'next/server';
 interface GenerateAnswerRequestPayload {
     query: string;
     n_results?: number; // Number of documents to retrieve for context, default 5
+    environmentId: string; // Added environmentId to the incoming request
 }
 
 interface GenerateAnswerResponsePayload {
@@ -18,6 +19,7 @@ interface GenerateAnswerResponsePayload {
             path: string;
             url: string;
             language: string;
+            environmentId: string; // Added environmentId to metadata
             [key: string]: any;
         };
         distance: number;
@@ -31,8 +33,15 @@ const PYTHON_GENERATE_ANSWER_SERVICE_URL = process.env.PYTHON_INDEXING_SERVICE_U
     : "http://localhost:8001/generate-answer";
 
 export async function POST(request: Request) {
-    const { query, n_results }: GenerateAnswerRequestPayload = await request.json();
-    console.log(`Next.js API: Received generate answer request for: "${query}" (n_results: ${n_results})`);
+    const { query, n_results, environmentId }: GenerateAnswerRequestPayload = await request.json(); // Destructure environmentId
+    console.log(`Next.js API: Received generate answer request for: "${query}" (n_results: ${n_results}) from environment: ${environmentId}`);
+
+    if (!environmentId) { // Basic validation
+        return NextResponse.json(
+            { status: "error", message: "Environment ID is required for answer generation." },
+            { status: 400 }
+        );
+    }
 
     try {
         const response = await fetch(PYTHON_GENERATE_ANSWER_SERVICE_URL, {
@@ -40,7 +49,7 @@ export async function POST(request: Request) {
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ query, n_results }),
+            body: JSON.stringify({ query, n_results, environmentId }), // Pass environmentId
         });
 
         if (!response.ok) {

@@ -2,7 +2,7 @@
 
 // Define types for Sitecore environment, matching the interface in page.tsx
 interface SitecoreEnvironment {
-    id: number;
+    id: string; // Changed to string for consistency with localStorage and backend
     name: string;
     url: string;
     apiKey: string;
@@ -22,29 +22,53 @@ interface ScrapedItem {
     childrenPaths?: { name: string; path: string }[];
 }
 
-// Define a common return type for API operations (for updateIndexesApi, startScrapingApi will be different)
-interface ApiResponse {
-    success: boolean;
-    message: string;
-    error?: string;
+// Define specific data types for each type of scrape update event
+interface ScrapeStartData {
+    language: string;
+    rootPath: string;
 }
 
-// Define a callback type for live updates
-type ScrapeUpdateCallback = (type: 'update' | 'start' | 'language_complete' | 'complete' | 'error', data: any) => void;
+interface ScrapeLanguageCompleteData {
+    language: string;
+}
+
+interface ScrapeCompleteErrorData {
+    message: string;
+}
+
+// Define a union type for the 'data' parameter in handleScrapeUpdate
+type ScrapeUpdateData = ScrapedItem | ScrapeStartData | ScrapeLanguageCompleteData | ScrapeCompleteErrorData;
+
+// Define a callback type for live updates, using the specific union type
+type ScrapeUpdateCallback = (type: 'update' | 'start' | 'language_complete' | 'complete' | 'error', data: ScrapeUpdateData) => void;
 
 /**
  * Initiates the Sitecore content scraping process via SSE, providing live updates.
  * @param environment The Sitecore environment details to scrape.
  * @param onUpdate Callback function to receive live updates.
+ * @param environmentId The ID of the environment being scraped, used for backend collection selection.
  * @returns A promise that resolves when the stream ends (either successfully or with an error).
  */
-export const startScrapingApi = async (environment: SitecoreEnvironment, onUpdate: ScrapeUpdateCallback): Promise<ApiResponse> => {
+export const startScrapingApi = async (environment: SitecoreEnvironment, onUpdate: ScrapeUpdateCallback, environmentId: string): Promise<ApiResponse> => {
     try {
-        // Use fetch with a stream to send the initial request body
+        // The /api/scrape route in Next.js will then forward this to the Python backend.
         const response = await fetch('/api/scrape', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ envId: environment.id, environment })
+            // Pass the entire environment object and the specific environmentId
+            body: JSON.stringify({
+                envId: environment.id, // This might be redundant if environmentId is the primary identifier
+                environment: { // Ensure all environment details are passed as expected by your Next.js API route
+                    id: environment.id,
+                    name: environment.name,
+                    url: environment.url,
+                    apiKey: environment.apiKey,
+                    status: environment.status,
+                    rootPath: environment.rootPath,
+                    languages: environment.languages,
+                },
+                environmentId: environmentId // Crucial for backend ChromaDB collection selection
+            })
         });
 
         if (!response.ok || !response.body) {
@@ -53,8 +77,6 @@ export const startScrapingApi = async (environment: SitecoreEnvironment, onUpdat
             return { success: false, message: `Failed to start scraping stream: ${errorText}`, error: errorText };
         }
 
-        // Use EventSource for SSE. Note: EventSource only supports GET requests.
-        // For POST requests with SSE, we need to manually read the stream from the fetch response.
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
@@ -75,7 +97,7 @@ export const startScrapingApi = async (environment: SitecoreEnvironment, onUpdat
 
                 const lines = eventChunk.split('\n');
                 let eventType = 'message';
-                let eventData = {};
+                let eventData: ScrapeUpdateData = { message: 'Unknown event data' } as ScrapeCompleteErrorData; // Default to a safe type
 
                 for (const line of lines) {
                     if (line.startsWith('event: ')) {
@@ -85,7 +107,7 @@ export const startScrapingApi = async (environment: SitecoreEnvironment, onUpdat
                             eventData = JSON.parse(line.substring('data: '.length));
                         } catch (e) {
                             console.error('Error parsing SSE data:', e);
-                            eventData = { raw: line.substring('data: '.length), error: 'Parsing failed' };
+                            eventData = { message: `Parsing failed: ${line.substring('data: '.length)}` };
                         }
                     }
                 }
@@ -105,14 +127,29 @@ export const startScrapingApi = async (environment: SitecoreEnvironment, onUpdat
 /**
  * Initiates the Sitecore index update process by calling the Next.js /api/update-index endpoint.
  * @param environment The Sitecore environment details for which to update indexes.
+ * @param environmentId The ID of the environment being updated, used for backend collection selection.
  * @returns A promise that resolves to an ApiResponse indicating success or failure.
  */
-export const updateIndexesApi = async (environment: SitecoreEnvironment): Promise<ApiResponse> => {
+export const updateIndexesApi = async (environment: SitecoreEnvironment, environmentId: string): Promise<ApiResponse> => {
     try {
+        // The /api/update-index route in Next.js will then forward this to the Python backend.
         const response = await fetch('/api/update-index', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ envId: environment.id, environment })
+            // Pass the specific environmentId
+            body: JSON.stringify({
+                envId: environment.id, // This might be redundant if environmentId is the primary identifier
+                environment: { // Ensure all environment details are passed as expected by your Next.js API route
+                    id: environment.id,
+                    name: environment.name,
+                    url: environment.url,
+                    apiKey: environment.apiKey,
+                    status: environment.status,
+                    rootPath: environment.rootPath,
+                    languages: environment.languages,
+                },
+                environmentId: environmentId // Crucial for backend ChromaDB collection selection
+            })
         });
 
         const result = await response.json();
@@ -126,5 +163,4 @@ export const updateIndexesApi = async (environment: SitecoreEnvironment): Promis
         console.error('Error calling /api/update-index:', error);
         return { success: false, message: `An error occurred while initiating index update: ${error.message}`, error: error.message };
     }
-    // Note: updateIndexesApi remains a single-response function as it's not a streaming process.
 };
