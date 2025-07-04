@@ -1,0 +1,6 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/Sitecore-Mate-Chat-Search/Sitecore-Chat-Search-MCP/.chroma_db_data
+/Sitecore-Mate-Chat-Search/Sitecore-Chat-Search-MCP/__pycache__
