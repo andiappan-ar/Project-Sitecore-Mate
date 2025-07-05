@@ -13,6 +13,7 @@
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
+    "noImplicitAny": false, // Change this from true to false, or add if missing
     "plugins": [
       {
         "name": "next"

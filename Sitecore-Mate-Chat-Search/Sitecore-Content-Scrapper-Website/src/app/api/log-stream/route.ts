@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
         'Connection': 'keep-alive',
       },
       // Pass through any query parameters if needed
-      // body: request.body, // Not needed for GET, but useful for POST proxies
+       body: request.body, // Not needed for GET, but useful for POST proxies
       // signal: request.signal, // Propagate abort signal from client to backend
     });
 
