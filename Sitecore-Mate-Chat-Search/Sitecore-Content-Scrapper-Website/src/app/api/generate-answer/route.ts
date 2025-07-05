@@ -27,10 +27,10 @@ interface GenerateAnswerResponsePayload {
     message?: string;
 }
 
-// URL of your Python FastAPI indexing service's generate-answer endpoint
-const PYTHON_GENERATE_ANSWER_SERVICE_URL = process.env.PYTHON_INDEXING_SERVICE_URL
-    ? process.env.PYTHON_INDEXING_SERVICE_URL.replace('/index-content', '/generate-answer')
-    : "http://localhost:8001/generate-answer";
+// The base URL of your Python FastAPI indexing service
+const PYTHON_BASE_API_URL = process.env.NEXT_PUBLIC_PYTHON_BASE_API_URL || "http://localhost:8001";
+// Construct the full URL for the generate-answer endpoint
+const PYTHON_GENERATE_ANSWER_SERVICE_URL = `${PYTHON_BASE_API_URL}/generate-answer`;
 
 export async function POST(request: Request) {
     const { query, n_results, environmentId }: GenerateAnswerRequestPayload = await request.json(); // Destructure environmentId
@@ -41,6 +41,7 @@ export async function POST(request: Request) {
             { status: "error", message: "Environment ID is required for answer generation." },
             { status: 400 }
         );
+    );
     }
 
     try {

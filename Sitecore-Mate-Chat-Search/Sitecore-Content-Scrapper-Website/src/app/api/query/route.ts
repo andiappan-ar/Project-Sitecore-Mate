@@ -28,10 +28,10 @@ interface QueryResponsePayload {
     message?: string;
 }
 
-// URL of your Python FastAPI indexing service's query endpoint
-const PYTHON_QUERY_SERVICE_URL = process.env.PYTHON_INDEXING_SERVICE_URL
-    ? process.env.PYTHON_INDEXING_SERVICE_URL.replace('/index-content', '/query-content')
-    : "http://localhost:8001/query-content";
+// The base URL of your Python FastAPI indexing service
+const PYTHON_BASE_API_URL = process.env.NEXT_PUBLIC_PYTHON_BASE_API_URL || "http://localhost:8001";
+// Construct the full URL for the query endpoint
+const PYTHON_QUERY_SERVICE_URL = `${PYTHON_BASE_API_URL}/query-content`;
 
 export async function POST(request: Request) {
     const { query, n_results, environmentId }: QueryRequestPayload = await request.json(); // Destructure environmentId

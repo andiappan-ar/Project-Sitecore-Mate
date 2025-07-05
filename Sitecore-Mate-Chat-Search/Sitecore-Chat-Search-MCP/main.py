@@ -1,256 +1,304 @@
-# src/python_server/main.py
+# Sitecore-Chat-Search-MCP/main.py
 
 import os
-import json
-import sys
+import hashlib
+import datetime
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional, Set
-import asyncio 
-import httpx 
-import xml.etree.ElementTree as ET
-
-# Import ChromaDB
-import chromadb
-from chromadb import Collection 
-
-# Import SentenceTransformer for actual embeddings
+from pydantic import BaseModel, Field # Keep Field if needed for other aliases, otherwise remove
+from typing import List, Optional
 from sentence_transformers import SentenceTransformer
+import chromadb
+from bs4 import BeautifulSoup
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+import google.generativeai as genai
+# Import the dotenv library
+from dotenv import load_dotenv
+import asyncio # Import asyncio for the queue
+from fastapi.responses import StreamingResponse # Import StreamingResponse
 
 # --- Configuration ---
-CHROMA_PERSIST_DIRECTORY = os.path.join(os.path.dirname(__file__), ".chroma_db_data")
-CHROMA_COLLECTION_BASE_NAME = "sitecore_content"
-GEMINI_API_KEY = "" 
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-MAX_DISTANCE_THRESHOLD = 1.5 
+# Load environment variables from a .env file
+load_dotenv()
+
+# Get the API key from the environment
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Check if the API key is available and configure Gemini
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY environment variable not set or .env file is missing.")
+genai.configure(api_key=GEMINI_API_KEY)
+
+
+# --- Models ---
+# Initialize the sentence transformer model for creating embeddings
+# This model is optimized for semantic search.
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Initialize ChromaDB client
+# This will create a persistent database in the './chroma_db' directory
+client = chromadb.PersistentClient(path="./chroma_db")
+
+# --- Global Log Queue for SSE ---
+# This queue will hold log messages to be streamed to the frontend.
+log_queue = asyncio.Queue()
+
+# --- Pydantic Models for API Payload ---
+
+# Represents a single field from Sitecore (e.g., 'Title', 'Body')
+class Field(BaseModel):
+    fieldName: str
+    fieldValue: str
+    componentId: Optional[str] = None # Added to receive component ID from frontend
+
+# Represents a Sitecore component/rendering
+class Component(BaseModel):
+    componentId: str
+    componentName: str
+    fields: List[Field]
+
+# Represents a Sitecore page
+class Page(BaseModel):
+    pageId: str
+    pagePath: str
+    pageTitle: str
+    language: str
+    fields: List[Field] # This will now contain both page's own fields and component fields
+    components: List[Component] # This array will now always be empty
+    itemType: str = "page" 
+
+# This is the main payload the frontend will send for indexing
+class ContentPayload(BaseModel):
+    pages: List[Page]
+    environment: str # e.g., 'production', 'staging'
+
+# Payload for querying the indexed content
+class QueryPayload(BaseModel):
+    query: str
+    environment: str
 
 # --- FastAPI App Initialization ---
-app = FastAPI(
-    title="ChromaDB Indexing Service",
-    description="A service to index Sitecore content, including component datasources.",
-    version="1.1.0"
-)
+app = FastAPI()
 
-# --- ChromaDB Client and Embedding Model Initialization ---
-chroma_client: Optional[chromadb.PersistentClient] = None
-embedding_model: Optional[SentenceTransformer] = None
+# --- Helper Functions for Chunking & Indexing ---
 
-def initialize_chromadb_and_model():
-    """Initializes the ChromaDB client and embedding model."""
-    global chroma_client, embedding_model
-    if chroma_client and embedding_model:
-        return
-    try:
-        os.makedirs(CHROMA_PERSIST_DIRECTORY, exist_ok=True)
-        chroma_client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIRECTORY)
-        embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        print("ChromaDB Client and SentenceTransformer model loaded successfully.", file=sys.stderr)
-    except Exception as e:
-        print(f"ERROR: Failed to initialize services: {e}", file=sys.stderr)
-        raise
+def generate_deterministic_id(page_id: str, field_name: str, chunk_index: int, component_id: Optional[str] = None) -> str:
+    """Creates a unique and deterministic ID for a chunk."""
+    base_string = f"{page_id}-{component_id or ''}-{field_name}-{chunk_index}"
+    return hashlib.sha256(base_string.encode('utf-8')).hexdigest()
 
-def get_chroma_collection(environment_id: str) -> Collection:
-    """Gets or creates a ChromaDB collection for a given environment ID."""
-    if not chroma_client:
-        raise HTTPException(status_code=500, detail="ChromaDB Client not initialized.")
-    collection_name = f"{CHROMA_COLLECTION_BASE_NAME}_{environment_id}"
-    return chroma_client.get_or_create_collection(name=collection_name)
+def get_text_splitter() -> RecursiveCharacterTextSplitter:
+    """Initializes and returns a text splitter."""
+    return RecursiveCharacterTextSplitter(
+        chunk_size=1000,  # Corresponds to ~250 tokens, a good size for context
+        chunk_overlap=100, # Provides context overlap between chunks
+        length_function=len,
+        is_separator_regex=False,
+    )
 
-@app.on_event("startup")
-async def startup_event():
-    await asyncio.to_thread(initialize_chromadb_and_model)
-
-# --- Pydantic Models ---
-class IndexRequestItem(BaseModel):
-    id: str
-    name: str
-    path: str
-    url: str
-    language: str
-    content: str
-    environmentId: str
-    graphql_endpoint: str
-    api_key: str
-    sharedLayout: Optional[Dict[str, Any]] = None
-    finalLayout: Optional[Dict[str, Any]] = None
-
-class QueryRequest(BaseModel):
-    query: str
-    environmentId: str
-    n_results: int = 5
-
-class GenerateAnswerRequest(BaseModel):
-    query: str
-    environmentId: str
-    n_results: int = 5
-
-# --- Helper Functions ---
-
-def _extract_datasource_ids_from_layout(layout_xml: str) -> Set[str]:
-    """Parses layout XML and extracts a unique set of datasource IDs."""
-    if not layout_xml:
-        return set()
-    try:
-        sanitized_xml = layout_xml.replace('&', '&amp;')
-        root = ET.fromstring(sanitized_xml)
-        namespaces = {'s': 's'} 
-        datasource_ids = {
-            r.get('{s}ds') for r in root.findall('.//r[@s:ds]', namespaces=namespaces) if r.get('{s}ds')
-        }
-        return datasource_ids
-    except ET.ParseError as e:
-        print(f"Warning: Could not parse layout XML. Error: {e}", file=sys.stderr)
-        return set()
-
-async def fetch_datasource_content(datasource_id: str, language: str, graphql_endpoint: str, api_key: str) -> str:
-    """Fetches and concatenates all text fields from a given datasource item."""
-    query = """
-    query GetDataSourceContent($id: String!, $language: String!) {
-      item(path: $id, language: $language) {
-        ownFields: fields(ownFields: false, excludeStandardFields: true) {
-          name
-          value
-        }
-      }
-    }
+# --- SSE Log Stream Endpoint ---
+@app.get("/log-stream")
+async def log_stream():
     """
-    try:
-        # FIX: Added verify=False to disable SSL certificate verification for local development.
-        async with httpx.AsyncClient(verify=False) as client:
-            response = await client.post(
-                graphql_endpoint,
-                headers={"Content-Type": "application/json", "sc_apikey": api_key},
-                json={"query": query, "variables": {"id": datasource_id, "language": language}},
-                timeout=20.0
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            if data.get("data") and data["data"].get("item"):
-                fields = data["data"]["item"].get("ownFields", [])
-                return "\n".join([f"{field['name']}: {field['value']}" for field in fields if field.get('value')])
-            return ""
-    except Exception as e:
-        print(f"Error fetching datasource {datasource_id}: {e}", file=sys.stderr)
-        return ""
+    Streams real-time logs to the client using Server-Sent Events (SSE).
+    """
+    async def event_generator():
+        while True:
+            try:
+                # Wait for a log message to be put into the queue
+                message = await log_queue.get()
+                yield f"data: {message}\n\n"
+            except asyncio.CancelledError:
+                # This exception is raised when the client disconnects
+                break
+            except Exception as e:
+                print(f"Error in log stream event_generator: {e}")
+                yield f"data: Error: {e}\n\n"
+                # Optionally, re-raise the exception or break if a critical error occurs
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 # --- API Endpoints ---
 
+@app.get("/")
+def read_root():
+    """Root endpoint for health check."""
+    return {"message": "Sitecore Chat Search MCP is running"}
+
 @app.post("/index-content")
-async def index_content(item: IndexRequestItem):
-    """Receives content, fetches unique datasource content from layouts, and indexes it."""
-    if not embedding_model:
-        raise HTTPException(status_code=500, detail="Embedding Model not initialized.")
-    
-    collection = get_chroma_collection(item.environmentId)
-    print(f"Aggregating content for item: {item.path}", file=sys.stderr)
-
-    shared_ds_ids = _extract_datasource_ids_from_layout(item.sharedLayout.get("value") if item.sharedLayout else "")
-    final_ds_ids = _extract_datasource_ids_from_layout(item.finalLayout.get("value") if item.finalLayout else "")
-    
-    unique_datasource_ids = shared_ds_ids.union(final_ds_ids)
-    
-    print(f"Found {len(unique_datasource_ids)} unique datasources for this page.", file=sys.stderr)
-
-    tasks = [
-        fetch_datasource_content(ds_id, item.language, item.graphql_endpoint, item.api_key) 
-        for ds_id in unique_datasource_ids
-    ]
-    datasource_contents = await asyncio.gather(*tasks)
-    
-    aggregated_content = item.content
-    if datasource_contents:
-        valid_contents = filter(None, datasource_contents)
-        aggregated_content += "\n\n--- Components Content ---\n" + "\n\n".join(valid_contents)
-
+async def index_content(payload: ContentPayload): # Changed to async
+    """
+    Receives structured content from Sitecore, chunks it, and indexes it in ChromaDB.
+    This endpoint implements the logic from our agreed plan.
+    """
     try:
-        embedding = await asyncio.to_thread(embedding_model.encode, aggregated_content)
-        metadata = {"name": item.name, "path": item.path, "url": item.url, "language": item.language}
-        
-        collection.add(
-            documents=[aggregated_content],
-            metadatas=[metadata],
-            ids=[f"{item.id}-{item.language}"],
-            embeddings=[embedding.tolist()]
-        )
-        return {"status": "success", "message": f"Item {item.id} indexed with aggregated content."}
+        # Get or create a collection in ChromaDB for the specified environment
+        collection = client.get_or_create_collection(name=payload.environment)
+        text_splitter = get_text_splitter()
+
+        all_chunks = []
+        all_metadatas = []
+        all_ids = []
+
+        await log_queue.put(f"--- Starting indexing for environment: {payload.environment} ---")
+        await log_queue.put(f"Total pages to process: {len(payload.pages)}")
+
+        # Process each page from the payload
+        for page_idx, page in enumerate(payload.pages):
+            # Determine if it's a "page" or "component page" based on itemType
+            # Now, page.itemType should accurately reflect if it's a primary content page or a component data source
+            page_type_label = "page"
+            if page.itemType and page.itemType.lower() == "component": # Access page.itemType
+                page_type_label = "component page"
+            
+            await log_queue.put(f"Processing {page_type_label} {page_idx + 1}/{len(payload.pages)}: {page.pageTitle} (ID: {page.pageId})")
+            
+            # Process ALL fields (both page's own and flattened component fields)
+            for field_idx, field in enumerate(page.fields):
+                field_log_label = "page field"
+                if field.fieldName in ["__Renderings", "__Final Renderings"]:
+                    field_log_label = "rendering field"
+                elif field.componentId: # If field has a componentId, it's from a component data source
+                    field_log_label = "component field (flattened)"
+                
+                # Added page.pageId to the log message
+                await log_queue.put(f"  - Processing {field_log_label} {field_idx + 1}: {field.fieldName} (Page ID: {page.pageId})")
+                
+                # Clean HTML from rich text fields
+                soup = BeautifulSoup(field.fieldValue, "html.parser")
+                text = soup.get_text(separator=" ", strip=True)
+
+                if not text:
+                    await log_queue.put(f"    (Skipping empty {field_log_label}: {field.fieldName} for Page ID: {page.pageId})")
+                    continue
+
+                # Split the cleaned text into chunks
+                chunks = text_splitter.split_text(text)
+                await log_queue.put(f"    Split into {len(chunks)} chunks.")
+                for i, chunk_text in enumerate(chunks):
+                    chunk_id = generate_deterministic_id(page.pageId, field.fieldName, i, field.componentId) # Pass field.componentId
+                    metadata = {
+                        "page_id": page.pageId,
+                        "page_path": page.pagePath,
+                        "page_title": page.pageTitle,
+                        "component_id": field.componentId or "", # Use field.componentId or empty string
+                        "field_name": field.fieldName,
+                        "chunk_index": i,
+                        "language": page.language,
+                        "created_at": datetime.datetime.utcnow().isoformat()
+                    }
+                    all_chunks.append(chunk_text)
+                    all_metadatas.append(metadata)
+                    all_ids.append(chunk_id)
+
+            # The 'components' array in Page is now expected to be empty, as fields are flattened.
+            # So, the original loop for page.components is no longer needed here for processing.
+            # It was primarily for logging component names and IDs, which are now handled by field.componentId.
+            # If you still need to log component names/IDs without processing their fields here,
+            # you would need a separate mechanism or modify the frontend to send a list of component metadata.
+            # For now, this part is effectively removed as all relevant content is in page.fields.
+
+        # If there are chunks to add, embed and store them in ChromaDB
+        if all_chunks:
+            await log_queue.put(f"--- Embedding and adding {len(all_chunks)} total chunks to ChromaDB ---")
+            embeddings = model.encode(all_chunks).tolist()
+            collection.add(
+                embeddings=embeddings,
+                documents=all_chunks,
+                metadatas=all_metadatas,
+                ids=all_ids
+            )
+            await log_queue.put("--- Finished adding chunks to ChromaDB ---")
+            return {"status": "success", "message": f"Indexed {len(all_chunks)} chunks for environment '{payload.environment}'."}
+        else:
+            await log_queue.put("--- No new content to index after processing all pages ---")
+            return {"status": "success", "message": "No new content to index."}
+
     except Exception as e:
-        print(f"ERROR indexing item {item.id}: {e}", file=sys.stderr)
+        # Log the error and return a meaningful response
+        await log_queue.put(f"Error indexing content: {e}")
+        print(f"Error indexing content: {e}") # Keep for server-side debugging
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/query-content")
-async def query_content(request: QueryRequest):
-    """Performs a vector similarity search."""
-    if not embedding_model:
-        raise HTTPException(status_code=500, detail="Embedding Model not initialized.")
-    collection = get_chroma_collection(request.environmentId)
+def query_content(payload: QueryPayload):
+    """
+    Receives a query, embeds it, and performs a similarity search in ChromaDB.
+    """
     try:
-        query_embedding = await asyncio.to_thread(embedding_model.encode, request.query)
+        collection = client.get_collection(name=payload.environment)
+        
+        # Create an embedding for the user's query
+        query_embedding = model.encode([payload.query]).tolist()
+        
+        # Query the collection to find the 5 most relevant chunks
         results = collection.query(
-            query_embeddings=[query_embedding.tolist()],
-            n_results=request.n_results,
-            include=['documents', 'metadatas', 'distances']
+            query_embeddings=query_embedding,
+            n_results=5
         )
-        formatted_results = [
-            {"content": doc, "metadata": meta, "distance": dist}
-            for doc, meta, dist in zip(results['documents'][0], results['metadatas'][0], results['distances'][0])
-            if dist <= MAX_DISTANCE_THRESHOLD
-        ]
-        return {"status": "success", "results": formatted_results}
+        return results
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error querying content: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not query environment '{payload.environment}'. It might not exist or an error occurred.")
+
 
 @app.post("/generate-answer")
-async def generate_answer(request: GenerateAnswerRequest):
-    """Generates an answer using RAG."""
-    if not embedding_model:
-        raise HTTPException(status_code=500, detail="Embedding Model not initialized.")
-    collection = get_chroma_collection(request.environmentId)
+async def generate_answer(payload: QueryPayload):
+    """
+    Generates a conversational answer using a RAG (Retrieval-Augmented Generation) approach.
+    """
     try:
-        query_embedding = await asyncio.to_thread(embedding_model.encode, request.query)
-        retrieval_results = collection.query(
-            query_embeddings=[query_embedding.tolist()],
-            n_results=request.n_results,
-            include=['documents', 'metadatas', 'distances']
+        # 1. Retrieve Context (same as /query-content)
+        collection = client.get_collection(name=payload.environment)
+        query_embedding = model.encode([payload.query]).tolist()
+        context_results = collection.query(
+            query_embeddings=query_embedding,
+            n_results=5
         )
-        context_documents = [
-            {"content": doc, "metadata": meta}
-            for doc, meta, dist in zip(retrieval_results['documents'][0], retrieval_results['metadatas'][0], retrieval_results['distances'][0])
-            if dist <= MAX_DISTANCE_THRESHOLD
-        ]
-        if not context_documents:
-            return {"status": "success", "answer": "I could not find any relevant information to answer your question.", "context": []}
-        
-        context_str = "\n\n".join([f"--- Document URL: {doc['metadata'].get('url', 'N/A')} ---\n{doc['content']}" for doc in context_documents])
-        llm_prompt = (
-            "You are an assistant that answers questions based *only* on the provided context. "
-            "Do not use any external knowledge. If the answer is not in the context, "
-            "state that you cannot answer the question based on the provided information. "
-            "After your answer, list the URLs of the documents you used as references.\n\n"
-            f"--- CONTEXT ---\n{context_str}\n\n"
-            f"--- QUESTION ---\n{request.query}\n\n"
-            "--- ANSWER ---"
-        )
-        
-        async with httpx.AsyncClient() as client:
-            payload = {"contents": [{"parts": [{"text": llm_prompt}]}]}
-            headers = {"Content-Type": "application/json"}
-            gemini_url_with_key = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
-            response = await client.post(gemini_url_with_key, headers=headers, json=payload, timeout=30.0)
-            response.raise_for_status()
-            gemini_result = response.json()
-            generated_text = gemini_result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', "Could not extract text from LLM response.")
-            return {"status": "success", "answer": generated_text, "context": context_documents}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate answer: {e}")
 
-# --- CORS Configuration ---
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+        # Check if we got any documents back
+        if not context_results or not context_results.get('documents'):
+            return {"answer": "I could not find any relevant information to answer your question.", "sources": []}
+
+        # 2. Augment the Prompt
+        # Combine the retrieved documents into a single context string
+        context = "\n".join(context_results['documents'][0])
+        
+        # Create a prompt for the Gemini model
+        prompt = f"""
+        You are a helpful assistant for a website.
+        Based on the following context, please answer the user's question.
+        If the context does not contain the answer, say that you don't know.
+
+        Context:
+        ---
+        {context}
+        ---
+
+        User Question: {payload.query}
+
+        Answer:
+        """
+
+        # 3. Generate the Answer
+        llm = genai.GenerativeModel('gemini-pro')
+        response = await llm.generate_content_async(prompt)
+        
+        # Extract unique sources from the metadata
+        sources = []
+        if context_results.get('metadatas'):
+            seen_paths = set()
+            for meta in context_results['metadatas'][0]:
+                if meta['page_path'] not in seen_paths:
+                    sources.append({
+                        "title": meta['page_title'],
+                        "path": meta['page_path']
+                    })
+                    seen_paths.add(meta['page_path'])
+
+        return {"answer": response.text, "sources": sources}
+
+    except Exception as e:
+        print(f"Error generating answer: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
