@@ -28,6 +28,7 @@ export interface Page {
   fields: Field[]; // This will now contain both page's own fields and component fields
   components: Component[]; // This array will now always be empty as component fields are flattened
   itemType?: 'page' | 'component'; // 'page' for content pages, 'component' for data source items
+  url: string; // Added to capture the public-facing URL
 }
 
 // Define the overall payload structure for the indexing service
@@ -44,7 +45,7 @@ const GetPageContent = gql`
       name
       displayName
       path
-      url
+      url # Fetch the URL
       hasChildren
       children {
         name
@@ -76,7 +77,7 @@ const GetDataSourceContent = gql`
       name
       displayName
       path
-      url
+      url # Fetch the URL
       hasChildren
       ownFields: fields(ownFields: false, excludeStandardFields: true) {
         name
@@ -184,7 +185,7 @@ export async function scrape(
     console.log(`Determined itemType for ${item.displayName || item.name} (${item.id}): ${itemType}`);
 
     const currentItemFields: Field[] = item.ownFields.map((field: any) => ({
-      fieldName: "PageField."+field.name,
+        fieldName: "PageField."+field.name,
       fieldValue: field.value || '',
       componentId: parentPageId ? item.id : undefined, // If this is a component data source, set its ID
     }));
@@ -215,31 +216,34 @@ export async function scrape(
         });
 
         const dsItem = dsResponse?.item;
-        if (dsItem) {
-          // Recursively scrape the data source, passing its ID as the parentPageId
-          // This call will return a ContentPayload, but we only care about the fields it collects
-          // We pass the current 'item.id' as the parentPageId for the data source's content
-          // const tempScrapedPages: Page[] = []; // Temporary array for recursive call
-          // await scrape(graphqlEndpoint, apiKey, dsItem.path, language, environmentName, tempScrapedPages, processedItemIds, item.id);
-          
-          // Extract fields from the tempScrapedPages (which will contain only the dsItem as a 'page' with its fields)
-          // and add the componentId to them.
-          // if (tempScrapedPages.length > 0) {
-            //const dsPage = tempScrapedPages[0]; // Assuming only one item is returned for a data source ID
-            const componentName = "{"+dsItem.path+"}"; // Use pageTitle as component name, fallback to ID
-            dsItem.ownFields.forEach(field => {
-              componentFieldsFromDataSources.push({
-                fieldName: `${componentName}.${field.name}`, // Prepend component name to fieldName
-                fieldValue: field.value,
-                componentId: item.id, // This is the ID of the data source item itself
-              });
-            });
-          // }
+            if (dsItem) {
+                // Recursively scrape the data source, passing its ID as the parentPageId
+                // This call will return a ContentPayload, but we only care about the fields it collects
+                // We pass the current 'item.id' as the parentPageId for the data source's content
+                // const tempScrapedPages: Page[] = []; // Temporary array for recursive call
+                // await scrape(graphqlEndpoint, apiKey, dsItem.path, language, environmentName, tempScrapedPages, processedItemIds, item.id);
+
+                // Extract fields from the tempScrapedPages (which will contain only the dsItem as a 'page' with its fields)
+                // and add the componentId to them.
+                // if (tempScrapedPages.length > 0) {
+                //const dsPage = tempScrapedPages[0]; // Assuming only one item is returned for a data source ID
+                const componentName = "{"+dsItem.path+"}"; // Use pageTitle as component name, fallback to ID
+                dsItem.ownFields.forEach(field => {
+                    componentFieldsFromDataSources.push({
+                        fieldName: `${componentName}.${field.name}`, // Prepend component name to fieldName
+                        fieldValue: field.value,
+                        componentId: item.id, // This is the ID of the data source item itself
+                    });
+                });
+                // }
+            }
+        } catch (dsError: any) {
+            console.error(`Error scraping data source ${dsId}:`, dsError.message);
         }
-      } catch (dsError: any) {
-        console.error(`Error scraping data source ${dsId}:`, dsError.message);
-      }
     }
+
+    // Determine the URL for the current item. Use item.url directly.
+    const itemUrl = item.url || '';
 
     // If the current item is a primary content page, add it to scrapedPages
     if (itemType === 'page') {
@@ -251,6 +255,7 @@ export async function scrape(
         fields: [...currentItemFields, ...componentFieldsFromDataSources], // Combine page's own fields with component fields
         components: [], // This array is now always empty
         itemType: itemType,
+        url: itemUrl, // Include the URL here
       });
     } else {
       // If it's a component data source item itself (not a primary page),
@@ -269,6 +274,7 @@ export async function scrape(
           fields: currentItemFields, // Only its own fields
           components: [],
           itemType: itemType,
+          url: itemUrl, // Include the URL here
         });
       }
     }

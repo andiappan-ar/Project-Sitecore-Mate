@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server';
 interface QueryRequestPayload {
     query: string;
     n_results?: number;
-    environmentId: string; // Added environmentId to the incoming request
+    environment: string; // Changed from environmentId to environment
 }
 
 interface QueryResultItem {
@@ -16,7 +16,7 @@ interface QueryResultItem {
         path: string;
         url: string;
         language: string;
-        environmentId: string; // Added environmentId to metadata
+        environmentId: string; // This is metadata from the Python backend, keep as is
         [key: string]: any; // Allow other metadata properties
     };
     distance: number;
@@ -28,18 +28,17 @@ interface QueryResponsePayload {
     message?: string;
 }
 
-// The base URL of your Python FastAPI indexing service
+// URL of your Python FastAPI indexing service's query endpoint
 const PYTHON_BASE_API_URL = process.env.NEXT_PUBLIC_PYTHON_BASE_API_URL || "http://localhost:8001";
-// Construct the full URL for the query endpoint
 const PYTHON_QUERY_SERVICE_URL = `${PYTHON_BASE_API_URL}/query-content`;
 
 export async function POST(request: Request) {
-    const { query, n_results, environmentId }: QueryRequestPayload = await request.json(); // Destructure environmentId
-    console.log(`Next.js API: Received query request for: "${query}" (n_results: ${n_results}) from environment: ${environmentId}`);
+    const { query, n_results, environment }: QueryRequestPayload = await request.json(); // Changed from environmentId to environment
+    console.log(`Next.js API: Received query request for: "${query}" (n_results: ${n_results}) from environment: ${environment}`); // Log environment
 
-    if (!environmentId) { // Basic validation
+    if (!environment) { // Validate environment (name)
         return NextResponse.json(
-            { status: "error", message: "Environment ID is required for query." },
+            { status: "error", message: "Environment name is required for query." },
             { status: 400 }
         );
     }
@@ -50,7 +49,7 @@ export async function POST(request: Request) {
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ query, n_results, environmentId }), // Pass environmentId
+            body: JSON.stringify({ query, n_results, environment }), // Pass environment (name)
         });
 
         if (!response.ok) {

@@ -65,6 +65,7 @@ class Page(BaseModel):
     fields: List[Field] # This will now contain both page's own fields and component fields
     components: List[Component] # This array will now always be empty
     itemType: str = "page" 
+    url: Optional[str] = None # Added to receive the public-facing URL from frontend
 
 # This is the main payload the frontend will send for indexing
 class ContentPayload(BaseModel):
@@ -132,6 +133,11 @@ async def index_content(payload: ContentPayload): # Changed to async
     This endpoint implements the logic from our agreed plan.
     """
     try:
+        # Added: Print the incoming payload to see what the backend receives
+        print("\n--- Incoming Payload to Python Indexing Service ---")
+        print(payload.model_dump_json(indent=2)) # Use model_dump_json for pretty printing Pydantic model
+        print("---------------------------------------------------\n")
+
         # Get or create a collection in ChromaDB for the specified environment
         collection = client.get_or_create_collection(name=payload.environment)
         text_splitter = get_text_splitter()
@@ -181,6 +187,7 @@ async def index_content(payload: ContentPayload): # Changed to async
                         "page_id": page.pageId,
                         "page_path": page.pagePath,
                         "page_title": page.pageTitle,
+                        "page_url": page.url, # Added page.url to metadata
                         "component_id": field.componentId or "", # Use field.componentId or empty string
                         "field_name": field.fieldName,
                         "chunk_index": i,
@@ -235,9 +242,40 @@ def query_content(payload: QueryPayload):
         # Query the collection to find the 5 most relevant chunks
         results = collection.query(
             query_embeddings=query_embedding,
-            n_results=5
+            n_results=5,
+            # Include metadatas and documents in the results
+            include=['documents', 'metadatas', 'distances'] 
         )
-        return results
+        
+        # Print the raw results from ChromaDB for debugging
+        print("\n--- Raw ChromaDB Query Results ---")
+        print(results)
+        print("----------------------------------\n")
+
+        # Format the results to match the frontend's QueryResponsePayload
+        formatted_results = []
+        if results and results.get('documents'):
+            for i in range(len(results['documents'][0])):
+                doc_content = results['documents'][0][i]
+                doc_metadata = results['metadatas'][0][i]
+                doc_distance = results['distances'][0][i]
+
+                formatted_results.append({
+                    "content": doc_content,
+                    "metadata": {
+                        "id": doc_metadata.get("page_id", ""),
+                        "name": doc_metadata.get("page_title", ""),
+                        "path": doc_metadata.get("page_path", ""),
+                        "url": doc_metadata.get("page_url", ""), # Use page_url from metadata
+                        "language": doc_metadata.get("language", ""),
+                        "environmentId": payload.environment, # Pass the environment name as environmentId for frontend
+                        "componentId": doc_metadata.get("component_id", ""), # Include componentId
+                        "fieldName": doc_metadata.get("field_name", ""), # Include fieldName
+                    },
+                    "distance": doc_distance,
+                })
+        
+        return {"status": "success", "results": formatted_results}
     except Exception as e:
         print(f"Error querying content: {e}")
         raise HTTPException(status_code=500, detail=f"Could not query environment '{payload.environment}'. It might not exist or an error occurred.")
@@ -254,7 +292,9 @@ async def generate_answer(payload: QueryPayload):
         query_embedding = model.encode([payload.query]).tolist()
         context_results = collection.query(
             query_embeddings=query_embedding,
-            n_results=5
+            n_results=5,
+            # Include metadatas and documents in the results
+            include=['documents', 'metadatas', 'distances'] 
         )
 
         # Check if we got any documents back
@@ -282,20 +322,21 @@ async def generate_answer(payload: QueryPayload):
         """
 
         # 3. Generate the Answer
-        llm = genai.GenerativeModel('gemini-pro')
+        llm = genai.GenerativeModel('gemini-2.0-flash') # Changed model to gemini-2.0-flash
         response = await llm.generate_content_async(prompt)
         
         # Extract unique sources from the metadata
         sources = []
         if context_results.get('metadatas'):
-            seen_paths = set()
+            seen_urls = set() # Changed to seen_urls to track unique URLs
             for meta in context_results['metadatas'][0]:
-                if meta['page_path'] not in seen_paths:
+                if meta.get('page_url') and meta['page_url'] not in seen_urls: # Check for page_url
                     sources.append({
-                        "title": meta['page_title'],
-                        "path": meta['page_path']
+                        "title": meta.get('page_title', ''),
+                        "path": meta.get('page_path', ''),
+                        "url": meta['page_url'] # Use page_url for the source URL
                     })
-                    seen_paths.add(meta['page_path'])
+                    seen_urls.add(meta['page_url'])
 
         return {"answer": response.text, "sources": sources}
 

@@ -5,6 +5,7 @@
 import { useState, useEffect, FormEvent } from 'react';
 import { Environment } from '@/lib/environments'; // Assuming Environment type is exported from here
 import { v4 as uuidv4 } from 'uuid'; // For generating unique IDs for new environments
+import Link from 'next/link'; // Import Link for navigation
 
 export default function Home() {
   const [environments, setEnvironments] = useState<Environment[]>([]);
@@ -174,6 +175,13 @@ export default function Home() {
     <div className="min-h-screen bg-gray-100 p-8 font-sans">
       <div className="max-w-7xl mx-auto bg-white p-6 rounded-lg shadow-lg">
         <h1 className="text-3xl font-bold text-gray-800 mb-6 text-center">Sitecore Content Scraper & Indexer</h1>
+
+        {/* Link to Query Page */}
+        <div className="text-center mb-6">
+            <Link href="/query" className="text-blue-600 hover:underline text-lg font-medium">
+                Go to AI Content Search &rarr;
+            </Link>
+        </div>
 
         {error && (
           <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">

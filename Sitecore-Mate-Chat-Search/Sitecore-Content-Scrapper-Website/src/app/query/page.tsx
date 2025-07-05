@@ -7,6 +7,11 @@ import Link from 'next/link';
 interface SitecoreEnvironment {
   id: string;
   name: string;
+  graphql_endpoint: string; // Added for completeness, though not used directly here
+  api_key: string; // Added for completeness
+  root_path: string; // Added for completeness
+  language: string; // Added for completeness
+  status: string; // Added for completeness
 }
 
 // Define the structure for a document's metadata
@@ -43,17 +48,27 @@ const QueryPage = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    // Load environments from localStorage to populate the dropdown
-    const storedEnvs = localStorage.getItem('environments');
-    if (storedEnvs) {
-      const parsedEnvs = JSON.parse(storedEnvs);
-      setEnvironments(parsedEnvs);
-      // Default to the first environment if available
-      if (parsedEnvs.length > 0) {
-        setSelectedEnvironmentId(parsedEnvs[0].id);
+  // Function to fetch environments from the API
+  const fetchEnvironments = async () => {
+    try {
+      const response = await fetch('/api/environments');
+      if (!response.ok) {
+        throw new Error(`Error fetching environments: ${response.statusText}`);
       }
+      const data: SitecoreEnvironment[] = await response.json();
+      setEnvironments(data);
+      if (data.length > 0) {
+        // Ensure initial selection is a string, matching the option value type
+        setSelectedEnvironmentId(data[0].id.toString()); 
+      }
+    } catch (err: any) {
+      setError(err.message);
+      console.error("Failed to fetch environments:", err);
     }
+  };
+
+  useEffect(() => {
+    fetchEnvironments(); // Call the fetch function on component mount
   }, []);
 
   // Function to clear previous results before a new search
@@ -64,9 +79,22 @@ const QueryPage = () => {
     setError(null);
   };
 
+  // Helper function to get the selected environment's name
+  const getSelectedEnvironmentName = (): string | undefined => {
+    // Ensure selectedEnvironmentId is not empty before attempting to find
+    if (!selectedEnvironmentId) return undefined;
+    
+    // Find the selected environment using its string ID
+    const selectedEnv = environments.find(env => env.id.toString() === selectedEnvironmentId);
+    // Return the name if found, otherwise undefined
+    return selectedEnv?.name;
+  };
+
   // NEW: Handler for the "Search Vector DB" button
   const handleVectorSearch = async () => {
-    if (!query || !selectedEnvironmentId) {
+    const environmentName = getSelectedEnvironmentName();
+
+    if (!query || !environmentName) { // Check for environmentName directly
       setError('Please select an environment and enter a query.');
       return;
     }
@@ -78,7 +106,7 @@ const QueryPage = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          environmentId: selectedEnvironmentId,
+          environment: environmentName, // Use the retrieved environment name
           query: query,
         }),
       });
@@ -98,7 +126,9 @@ const QueryPage = () => {
 
   // Main handler for the "Generate Answer" button
   const handleGenerateAnswer = async () => {
-    if (!query || !selectedEnvironmentId) {
+    const environmentName = getSelectedEnvironmentName();
+
+    if (!query || !environmentName) { // Check for environmentName directly
       setError('Please select an environment and enter a query.');
       return;
     }
@@ -110,7 +140,7 @@ const QueryPage = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          environmentId: selectedEnvironmentId,
+          environment: environmentName, // Use the retrieved environment name
           query: query,
         }),
       });
@@ -121,7 +151,18 @@ const QueryPage = () => {
       }
       const data = await response.json();
       setGeneratedAnswer(data.answer);
-      setRetrievedContext(data.context);
+      // Corrected: Use data.sources instead of data.context
+      // Also, map the sources to match ContextDocument structure if necessary
+      setRetrievedContext(data.sources.map((source: any) => ({
+        content: '', // Content is not directly provided in source, can be empty or fetched if needed
+        metadata: {
+          id: source.path, // Using path as ID for simplicity
+          name: source.title,
+          path: source.path,
+          url: source.path, // Assuming path is also the URL for now
+          language: '', // Language might not be in source, leave empty or fetch
+        }
+      })));
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -153,10 +194,10 @@ const QueryPage = () => {
             >
               {environments.length > 0 ? (
                 environments.map(env => (
-                  <option key={env.id} value={env.id}>{env.name}</option>
+                  <option key={env.id} value={env.id.toString()}>{env.name}</option> // Ensure value is string
                 ))
               ) : (
-                <option>No environments available. Please add some first.</option>
+                <option value="">No environments available. Please add some first.</option> // Added value for empty option
               )}
             </select>
             <input

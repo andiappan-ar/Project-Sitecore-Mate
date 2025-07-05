@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server';
 interface GenerateAnswerRequestPayload {
     query: string;
     n_results?: number; // Number of documents to retrieve for context, default 5
-    environmentId: string; // Added environmentId to the incoming request
+    environment: string; // Changed from environmentId to environment
 }
 
 interface GenerateAnswerResponsePayload {
@@ -19,7 +19,7 @@ interface GenerateAnswerResponsePayload {
             path: string;
             url: string;
             language: string;
-            environmentId: string; // Added environmentId to metadata
+            environmentId: string; // This is metadata from the Python backend, keep as is
             [key: string]: any;
         };
         distance: number;
@@ -27,21 +27,19 @@ interface GenerateAnswerResponsePayload {
     message?: string;
 }
 
-// The base URL of your Python FastAPI indexing service
+// URL of your Python FastAPI indexing service's generate-answer endpoint
 const PYTHON_BASE_API_URL = process.env.NEXT_PUBLIC_PYTHON_BASE_API_URL || "http://localhost:8001";
-// Construct the full URL for the generate-answer endpoint
 const PYTHON_GENERATE_ANSWER_SERVICE_URL = `${PYTHON_BASE_API_URL}/generate-answer`;
 
 export async function POST(request: Request) {
-    const { query, n_results, environmentId }: GenerateAnswerRequestPayload = await request.json(); // Destructure environmentId
-    console.log(`Next.js API: Received generate answer request for: "${query}" (n_results: ${n_results}) from environment: ${environmentId}`);
+    const { query, n_results, environment }: GenerateAnswerRequestPayload = await request.json(); // Changed from environmentId to environment
+    console.log(`Next.js API: Received generate answer request for: "${query}" (n_results: ${n_results}) from environment: ${environment}`); // Log environment
 
-    if (!environmentId) { // Basic validation
+    if (!environment) { // Validate environment (name)
         return NextResponse.json(
-            { status: "error", message: "Environment ID is required for answer generation." },
+            { status: "error", message: "Environment name is required for answer generation." },
             { status: 400 }
         );
-    );
     }
 
     try {
@@ -50,7 +48,7 @@ export async function POST(request: Request) {
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ query, n_results, environmentId }), // Pass environmentId
+            body: JSON.stringify({ query, n_results, environment }), // Pass environment (name)
         });
 
         if (!response.ok) {

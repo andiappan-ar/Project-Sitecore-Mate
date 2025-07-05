@@ -30,7 +30,9 @@ export async function processAndIndexContent(payload: ContentPayload) {
 
   console.log(`--- Sending ${filteredPayload.pages.length} pages (with content) to Python Indexing Service for environment: ${filteredPayload.environment} ---`);
   
-  // Removed: console.log(JSON.stringify(filteredPayload, null, 2)); // <-- Removed this log
+  // Re-added: Log the full payload for debugging
+  console.log('--- Full Payload to be sent to Python indexing service: ---');
+  console.log(JSON.stringify(filteredPayload, null, 2)); // <-- Re-added this log
 
   // Construct the full URL for the indexing endpoint
   const INDEXING_SERVICE_URL = `${PYTHON_BASE_API_URL}/index-content`;
