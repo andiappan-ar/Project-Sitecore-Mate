@@ -10,10 +10,10 @@ import Link from 'next/link'; // Import Link for navigation
 export default function Home() {
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [newEnvName, setNewEnvName] = useState('');
-  const [newEnvGraphQLEndpoint, setNewEnvGraphQLEndpoint] = useState('');
-  const [newEnvApiKey, setNewEnvApiKey] = useState('');
-  const [newEnvRootPath, setNewEnvRootPath] = useState('/sitecore/content/demo-mate-d-jss-xp/home');
-  const [newEnvLanguage, setNewEnvLanguage] = useState('en');
+  const [newEnvGraphQLEndpoint, setNewEnvGraphQLEndpoint] = useState(process.env.NEXT_PUBLIC_SITECORE_GRAPHQL_URL || '');
+  const [newEnvApiKey, setNewEnvApiKey] = useState(process.env.NEXT_PUBLIC_SITECORE_API_KEY || '');
+  const [newEnvRootPath, setNewEnvRootPath] = useState(process.env.NEXT_PUBLIC_SITECORE_ROOT_PATH || '/sitecore/content/demo-mate-d-jss-xp/home');
+  const [newEnvLanguage, setNewEnvLanguage] = useState(process.env.NEXT_PUBLIC_SITECORE_LANGUAGES?.split(',')[0] || 'en'); // Takes the first language if multiple
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -103,10 +103,11 @@ export default function Home() {
       setMessage('Environment added successfully!');
       setEnvironments(updatedEnvironments);
       setNewEnvName('');
-      setNewEnvGraphQLEndpoint('');
-      setNewEnvApiKey('');
-      setNewEnvRootPath('/sitecore/content/demo-mate-d-jss-xp/home');
-      setNewEnvLanguage('en');
+      // Keep the form fields populated with env values after adding
+      // setNewEnvGraphQLEndpoint(''); 
+      // setNewEnvApiKey('');
+      // setNewEnvRootPath('/sitecore/content/demo-mate-d-jss-xp/home');
+      // setNewEnvLanguage('en');
     } catch (err: any) {
       setError(err.message);
     }
