@@ -19,3 +19,25 @@ User Question: {query}
 
 Answer:
 """
+
+# Dynamic Prompt for Page-Level Fields
+PAGE_SUMMARY_PROMPT_TEMPLATE = """
+Below are structured fields for a web page.
+Please combine them into a single, clear, natural-language summary suitable for semantic search.
+
+Fields:
+{field_lines}
+
+Summary:
+"""
+
+# Dynamic Prompt for Component Fields
+COMPONENT_SUMMARY_PROMPT_TEMPLATE = """
+Below are the fields from a page component ("{component_name}").
+Please combine them into a single readable paragraph.
+
+Fields:
+{field_lines}
+
+Component Description:
+"""
