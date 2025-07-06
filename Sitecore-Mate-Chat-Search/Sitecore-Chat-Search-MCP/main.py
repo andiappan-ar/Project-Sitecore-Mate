@@ -3,76 +3,67 @@
 import os
 import hashlib
 import datetime
+import re
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field # Keep Field if needed for other aliases, otherwise remove
+from pydantic import BaseModel, Field
 from typing import List, Optional
 from sentence_transformers import SentenceTransformer
 import chromadb
 from bs4 import BeautifulSoup
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import google.generativeai as genai
-# Import the dotenv library
-from dotenv import load_dotenv
-import asyncio # Import asyncio for the queue
-from fastapi.responses import StreamingResponse # Import StreamingResponse
+from dotenv import load_dotenv # Re-import load_dotenv
+import asyncio
+from fastapi.responses import StreamingResponse
+
+# Import prompts
+from prompts import RAG_PROMPT_TEMPLATE
 
 # --- Configuration ---
-# Load environment variables from a .env file
-load_dotenv()
-
-# Get the API key from the environment
+load_dotenv() # Load environment variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# New: Load chunking and query parameters from environment variables
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 1000)) # Default to 1000 if not set
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 100)) # Default to 100 if not set
+N_RESULTS = int(os.getenv("N_RESULTS", 8)) # Default to 8 if not set
 
-# Check if the API key is available and configure Gemini
 if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable not set or .env file is missing.")
 genai.configure(api_key=GEMINI_API_KEY)
-
+print("Gemini API configured successfully.")
 
 # --- Models ---
-# Initialize the sentence transformer model for creating embeddings
-# This model is optimized for semantic search.
 model = SentenceTransformer('all-MiniLM-L6-v2')
-
-# Initialize ChromaDB client
-# This will create a persistent database in the './chroma_db' directory
 client = chromadb.PersistentClient(path="./chroma_db")
 
 # --- Global Log Queue for SSE ---
-# This queue will hold log messages to be streamed to the frontend.
 log_queue = asyncio.Queue()
 
 # --- Pydantic Models for API Payload ---
-
-# Represents a single field from Sitecore (e.g., 'Title', 'Body')
 class Field(BaseModel):
     fieldName: str
     fieldValue: str
-    componentId: Optional[str] = None # Added to receive component ID from frontend
+    componentId: Optional[str] = None
 
-# Represents a Sitecore component/rendering
 class Component(BaseModel):
     componentId: str
     componentName: str
     fields: List[Field]
 
-# Represents a Sitecore page
 class Page(BaseModel):
     pageId: str
     pagePath: str
     pageTitle: str
     language: str
-    fields: List[Field] # This will now contain both page's own fields and component fields
-    components: List[Component] # This array will now always be empty
-    itemType: str = "page" 
-    url: Optional[str] = None # Added to receive the public-facing URL from frontend
+    fields: List[Field]
+    components: List[Component]
+    itemType: str = "page"
+    url: Optional[str] = None
 
-# This is the main payload the frontend will send for indexing
 class ContentPayload(BaseModel):
     pages: List[Page]
-    environment: str # e.g., 'production', 'staging'
+    environment: str
 
-# Payload for querying the indexed content
 class QueryPayload(BaseModel):
     query: str
     environment: str
@@ -82,6 +73,38 @@ app = FastAPI()
 
 # --- Helper Functions for Chunking & Indexing ---
 
+def sanitize_chroma_db_name(name: str) -> str:
+    """
+    Sanitizes a string to be a valid ChromaDB collection name.
+    Follows ChromaDB's naming rules:
+    - Must be between 3 and 63 characters long.
+    - Must start and end with a lowercase letter or a digit.
+    - Must contain only lowercase letters, digits, or hyphens.
+    - Must not contain two consecutive hyphens.
+    """
+    # Replace spaces with hyphens
+    sanitized = name.replace(r'\s+', '-')
+    # Remove any characters not allowed by ChromaDB (keep a-z, 0-9, -)
+    sanitized = re.sub(r'[^a-z0-9-]', '', sanitized.lower())
+    # Ensure it starts and ends with an alphanumeric character
+    sanitized = re.sub(r'^[^a-z0-9]+', '', sanitized) # Remove non-alphanumeric from start
+    sanitized = re.sub(r'[^a-z0-9]+$', '', sanitized) # Remove non-alphanumeric from end
+    # Replace multiple hyphens with a single hyphen
+    sanitized = re.sub(r'-+', '-', sanitized)
+
+    # Ensure minimum length (ChromaDB requires at least 3 chars)
+    if len(sanitized) < 3:
+        # If too short after sanitization, append 'id' or a hash
+        # For simplicity, we'll just append 'id' if it's too short.
+        # In a real app, you might want a more robust unique suffix.
+        sanitized = sanitized + 'id'
+    
+    # Trim to max length if necessary (ChromaDB max 63 chars)
+    sanitized = sanitized[:63]
+
+    return sanitized
+
+
 def generate_deterministic_id(page_id: str, field_name: str, chunk_index: int, component_id: Optional[str] = None) -> str:
     """Creates a unique and deterministic ID for a chunk."""
     base_string = f"{page_id}-{component_id or ''}-{field_name}-{chunk_index}"
@@ -90,8 +113,8 @@ def generate_deterministic_id(page_id: str, field_name: str, chunk_index: int, c
 def get_text_splitter() -> RecursiveCharacterTextSplitter:
     """Initializes and returns a text splitter."""
     return RecursiveCharacterTextSplitter(
-        chunk_size=1000,  # Corresponds to ~250 tokens, a good size for context
-        chunk_overlap=100, # Provides context overlap between chunks
+        chunk_size=CHUNK_SIZE, # Use CHUNK_SIZE from environment
+        chunk_overlap=CHUNK_OVERLAP, # Use CHUNK_OVERLAP from environment
         length_function=len,
         is_separator_regex=False,
     )
@@ -105,16 +128,13 @@ async def log_stream():
     async def event_generator():
         while True:
             try:
-                # Wait for a log message to be put into the queue
                 message = await log_queue.get()
                 yield f"data: {message}\n\n"
             except asyncio.CancelledError:
-                # This exception is raised when the client disconnects
                 break
             except Exception as e:
                 print(f"Error in log stream event_generator: {e}")
                 yield f"data: Error: {e}\n\n"
-                # Optionally, re-raise the exception or break if a critical error occurs
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -127,50 +147,47 @@ def read_root():
     return {"message": "Sitecore Chat Search MCP is running"}
 
 @app.post("/index-content")
-async def index_content(payload: ContentPayload): # Changed to async
+async def index_content(payload: ContentPayload):
     """
     Receives structured content from Sitecore, chunks it, and indexes it in ChromaDB.
     This endpoint implements the logic from our agreed plan.
     """
     try:
-        # Added: Print the incoming payload to see what the backend receives
         print("\n--- Incoming Payload to Python Indexing Service ---")
-        print(payload.model_dump_json(indent=2)) # Use model_dump_json for pretty printing Pydantic model
+        print(payload.model_dump_json(indent=2))
         print("---------------------------------------------------\n")
 
-        # Get or create a collection in ChromaDB for the specified environment
-        collection = client.get_or_create_collection(name=payload.environment)
+        # Sanitize the environment name for ChromaDB
+        sanitized_environment_name = sanitize_chroma_db_name(payload.environment)
+        await log_queue.put(f"Sanitized ChromaDB collection name: {sanitized_environment_name}")
+
+        # Get or create a collection in ChromaDB using the sanitized name
+        collection = client.get_or_create_collection(name=sanitized_environment_name)
         text_splitter = get_text_splitter()
 
         all_chunks = []
         all_metadatas = []
         all_ids = []
 
-        await log_queue.put(f"--- Starting indexing for environment: {payload.environment} ---")
+        await log_queue.put(f"--- Starting indexing for environment: {payload.environment} (ChromaDB Collection: {sanitized_environment_name}) ---")
         await log_queue.put(f"Total pages to process: {len(payload.pages)}")
 
-        # Process each page from the payload
         for page_idx, page in enumerate(payload.pages):
-            # Determine if it's a "page" or "component page" based on itemType
-            # Now, page.itemType should accurately reflect if it's a primary content page or a component data source
             page_type_label = "page"
-            if page.itemType and page.itemType.lower() == "component": # Access page.itemType
+            if page.itemType and page.itemType.lower() == "component":
                 page_type_label = "component page"
             
             await log_queue.put(f"Processing {page_type_label} {page_idx + 1}/{len(payload.pages)}: {page.pageTitle} (ID: {page.pageId})")
             
-            # Process ALL fields (both page's own and flattened component fields)
             for field_idx, field in enumerate(page.fields):
                 field_log_label = "page field"
                 if field.fieldName in ["__Renderings", "__Final Renderings"]:
                     field_log_label = "rendering field"
-                elif field.componentId: # If field has a componentId, it's from a component data source
+                elif field.componentId:
                     field_log_label = "component field (flattened)"
                 
-                # Added page.pageId to the log message
                 await log_queue.put(f"  - Processing {field_log_label} {field_idx + 1}: {field.fieldName} (Page ID: {page.pageId})")
                 
-                # Clean HTML from rich text fields
                 soup = BeautifulSoup(field.fieldValue, "html.parser")
                 text = soup.get_text(separator=" ", strip=True)
 
@@ -178,17 +195,16 @@ async def index_content(payload: ContentPayload): # Changed to async
                     await log_queue.put(f"    (Skipping empty {field_log_label}: {field.fieldName} for Page ID: {page.pageId})")
                     continue
 
-                # Split the cleaned text into chunks
                 chunks = text_splitter.split_text(text)
                 await log_queue.put(f"    Split into {len(chunks)} chunks.")
                 for i, chunk_text in enumerate(chunks):
-                    chunk_id = generate_deterministic_id(page.pageId, field.fieldName, i, field.componentId) # Pass field.componentId
+                    chunk_id = generate_deterministic_id(page.pageId, field.fieldName, i, field.componentId)
                     metadata = {
                         "page_id": page.pageId,
                         "page_path": page.pagePath,
                         "page_title": page.pageTitle,
-                        "page_url": page.url, # Added page.url to metadata
-                        "component_id": field.componentId or "", # Use field.componentId or empty string
+                        "page_url": page.url,
+                        "component_id": field.componentId or "",
                         "field_name": field.fieldName,
                         "chunk_index": i,
                         "language": page.language,
@@ -198,14 +214,6 @@ async def index_content(payload: ContentPayload): # Changed to async
                     all_metadatas.append(metadata)
                     all_ids.append(chunk_id)
 
-            # The 'components' array in Page is now expected to be empty, as fields are flattened.
-            # So, the original loop for page.components is no longer needed here for processing.
-            # It was primarily for logging component names and IDs, which are now handled by field.componentId.
-            # If you still need to log component names/IDs without processing their fields here,
-            # you would need a separate mechanism or modify the frontend to send a list of component metadata.
-            # For now, this part is effectively removed as all relevant content is in page.fields.
-
-        # If there are chunks to add, embed and store them in ChromaDB
         if all_chunks:
             await log_queue.put(f"--- Embedding and adding {len(all_chunks)} total chunks to ChromaDB ---")
             embeddings = model.encode(all_chunks).tolist()
@@ -222,9 +230,8 @@ async def index_content(payload: ContentPayload): # Changed to async
             return {"status": "success", "message": "No new content to index."}
 
     except Exception as e:
-        # Log the error and return a meaningful response
         await log_queue.put(f"Error indexing content: {e}")
-        print(f"Error indexing content: {e}") # Keep for server-side debugging
+        print(f"Error indexing content: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -234,25 +241,22 @@ def query_content(payload: QueryPayload):
     Receives a query, embeds it, and performs a similarity search in ChromaDB.
     """
     try:
-        collection = client.get_collection(name=payload.environment)
+        # Sanitize the environment name for ChromaDB
+        sanitized_environment_name = sanitize_chroma_db_name(payload.environment)
+        collection = client.get_collection(name=sanitized_environment_name)
         
-        # Create an embedding for the user's query
         query_embedding = model.encode([payload.query]).tolist()
         
-        # Query the collection to find the 5 most relevant chunks
         results = collection.query(
             query_embeddings=query_embedding,
-            n_results=5,
-            # Include metadatas and documents in the results
+            n_results=N_RESULTS, # Use N_RESULTS from environment
             include=['documents', 'metadatas', 'distances'] 
         )
         
-        # Print the raw results from ChromaDB for debugging
         print("\n--- Raw ChromaDB Query Results ---")
         print(results)
         print("----------------------------------\n")
 
-        # Format the results to match the frontend's QueryResponsePayload
         formatted_results = []
         if results and results.get('documents'):
             for i in range(len(results['documents'][0])):
@@ -266,11 +270,11 @@ def query_content(payload: QueryPayload):
                         "id": doc_metadata.get("page_id", ""),
                         "name": doc_metadata.get("page_title", ""),
                         "path": doc_metadata.get("page_path", ""),
-                        "url": doc_metadata.get("page_url", ""), # Use page_url from metadata
+                        "url": doc_metadata.get("page_url", ""),
                         "language": doc_metadata.get("language", ""),
-                        "environmentId": payload.environment, # Pass the environment name as environmentId for frontend
-                        "componentId": doc_metadata.get("component_id", ""), # Include componentId
-                        "fieldName": doc_metadata.get("field_name", ""), # Include fieldName
+                        "environmentId": payload.environment,
+                        "componentId": doc_metadata.get("component_id", ""),
+                        "fieldName": doc_metadata.get("field_name", ""),
                     },
                     "distance": doc_distance,
                 })
@@ -287,55 +291,36 @@ async def generate_answer(payload: QueryPayload):
     Generates a conversational answer using a RAG (Retrieval-Augmented Generation) approach.
     """
     try:
-        # 1. Retrieve Context (same as /query-content)
-        collection = client.get_collection(name=payload.environment)
+        # Sanitize the environment name for ChromaDB
+        sanitized_environment_name = sanitize_chroma_db_name(payload.environment)
+        collection = client.get_collection(name=sanitized_environment_name)
         query_embedding = model.encode([payload.query]).tolist()
         context_results = collection.query(
             query_embeddings=query_embedding,
-            n_results=5,
-            # Include metadatas and documents in the results
+            n_results=N_RESULTS, # Use N_RESULTS from environment
             include=['documents', 'metadatas', 'distances'] 
         )
 
-        # Check if we got any documents back
         if not context_results or not context_results.get('documents'):
             return {"answer": "I could not find any relevant information to answer your question.", "sources": []}
 
-        # 2. Augment the Prompt
-        # Combine the retrieved documents into a single context string
         context = "\n".join(context_results['documents'][0])
         
-        # Create a prompt for the Gemini model
-        prompt = f"""
-        You are a helpful assistant for a website.
-        Based on the following context, please answer the user's question.
-        If the context does not contain the answer, say that you don't know.
-        Please use your own words when answering, and avoid repeating the context verbatim.
+        # Use the imported prompt template
+        prompt = RAG_PROMPT_TEMPLATE.format(context=context, query=payload.query)
 
-        Context:
-        ---
-        {context}
-        ---
-
-        User Question: {payload.query}
-
-        Answer:
-        """
-
-        # 3. Generate the Answer
-        llm = genai.GenerativeModel('gemini-2.0-flash') # Changed model to gemini-2.0-flash
+        llm = genai.GenerativeModel('gemini-2.0-flash')
         response = await llm.generate_content_async(prompt)
         
-        # Extract unique sources from the metadata
         sources = []
         if context_results.get('metadatas'):
-            seen_urls = set() # Changed to seen_urls to track unique URLs
+            seen_urls = set()
             for meta in context_results['metadatas'][0]:
-                if meta.get('page_url') and meta['page_url'] not in seen_urls: # Check for page_url
+                if meta.get('page_url') and meta['page_url'] not in seen_urls:
                     sources.append({
                         "title": meta.get('page_title', ''),
                         "path": meta.get('page_path', ''),
-                        "url": meta['page_url'] # Use page_url for the source URL
+                        "url": meta['page_url']
                     })
                     seen_urls.add(meta['page_url'])
 
@@ -344,3 +329,4 @@ async def generate_answer(payload: QueryPayload):
     except Exception as e:
         print(f"Error generating answer: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
