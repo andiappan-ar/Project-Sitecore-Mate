@@ -310,6 +310,7 @@ async def generate_answer(payload: QueryPayload):
         You are a helpful assistant for a website.
         Based on the following context, please answer the user's question.
         If the context does not contain the answer, say that you don't know.
+        Please use your own words when answering, and avoid repeating the context verbatim.
 
         Context:
         ---

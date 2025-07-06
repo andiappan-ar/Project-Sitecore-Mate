@@ -1,7 +1,8 @@
 // src/graphql/scraping.ts
 
-import { GraphQLClient, gql } from 'graphql-request';
-import { XMLParser } from 'fast-xml-parser'; // For parsing XML layout fields
+import { GraphQLClient, gql } from "graphql-request";
+import { XMLParser } from "fast-xml-parser"; // For parsing XML layout fields
+import { processAndIndexContent } from "../index/process-index"; // Import the indexing function
 
 // Define the structure of a field as expected by the backend
 export interface Field {
@@ -27,7 +28,7 @@ export interface Page {
   language: string;
   fields: Field[]; // This will now contain both page's own fields and component fields
   components: Component[]; // This array will now always be empty as component fields are flattened
-  itemType?: 'page' | 'component'; // 'page' for content pages, 'component' for data source items
+  itemType?: "page" | "component"; // 'page' for content pages, 'component' for data source items
   url: string; // Added to capture the public-facing URL
 }
 
@@ -72,7 +73,8 @@ const GetPageContent = gql`
 // GraphQL query to get data source content
 const GetDataSourceContent = gql`
   query GetDataSourceContent($id: String!, $language: String!) {
-    item(path: $id, language: $language) { # Using path as ID as per your query structure
+    item(path: $id, language: $language) {
+      # Using path as ID as per your query structure
       id
       name
       displayName
@@ -80,6 +82,7 @@ const GetDataSourceContent = gql`
       url # Fetch the URL
       hasChildren
       ownFields: fields(ownFields: false, excludeStandardFields: true) {
+        __typename
         name
         value
       }
@@ -99,16 +102,17 @@ function extractDataSourceIds(layoutXml: string): string[] {
 
   // Function to recursively find data source IDs
   const findIds = (obj: any) => {
-    if (obj && typeof obj === 'object') {
+    if (obj && typeof obj === "object") {
       // Check for rendering elements
       if (obj.r && obj.r.d && obj.r.d.r) {
         const renderings = Array.isArray(obj.r.d.r) ? obj.r.d.r : [obj.r.d.r];
         for (const rendering of renderings) {
           // Check for both '@_ds' and '@_s:ds' (with namespace prefix)
-          if (rendering['@_ds']) {
-            ids.push(rendering['@_ds']);
-          } else if (rendering['@_s:ds']) { // Added check for namespace prefixed attribute
-            ids.push(rendering['@_s:ds']);
+          if (rendering["@_ds"]) {
+            ids.push(rendering["@_ds"]);
+          } else if (rendering["@_s:ds"]) {
+            // Added check for namespace prefixed attribute
+            ids.push(rendering["@_s:ds"]);
           }
           // Recursively check children renderings
           if (rendering.d && rendering.d.r) {
@@ -126,20 +130,27 @@ function extractDataSourceIds(layoutXml: string): string[] {
   };
 
   findIds(jsonObj);
-  return ids.filter(id => id); // Filter out any empty or null IDs
+  return ids.filter((id) => id); // Filter out any empty or null IDs
+}
+
+function mapField(fieldName, fieldValue, componentId) {
+  return {
+    fieldName: fieldName,
+    fieldValue: fieldValue,
+    componentId: componentId,
+  };
 }
 
 /**
- * Recursively scrapes content from Sitecore, including pages and their associated data sources.
+ * Recursively scrapes content from Sitecore and indexes it page by page.
  * @param graphqlEndpoint The Sitecore GraphQL endpoint URL.
  * @param apiKey The Sitecore API key.
  * @param currentPath The current path to scrape.
  * @param language The language to scrape.
  * @param environmentName The name of the environment for the backend payload.
- * @param scrapedPages Accumulator for all scraped page/component data.
  * @param processedItemIds Set to keep track of processed item IDs to avoid infinite loops.
  * @param parentPageId Optional: The ID of the primary content page that this item's content should be associated with.
- * @returns A promise that resolves to the structured content payload.
+ * @returns A promise that resolves when scraping and indexing for the current path is complete.
  */
 export async function scrape(
   graphqlEndpoint: string,
@@ -147,10 +158,10 @@ export async function scrape(
   currentPath: string,
   language: string,
   environmentName: string,
-  scrapedPages: Page[] = [],
   processedItemIds: Set<string> = new Set(),
   parentPageId?: string // New parameter: ID of the page that owns this content
-): Promise<ContentPayload> {
+): Promise<void> {
+  // Changed return type to void
   const client = new GraphQLClient(graphqlEndpoint, {
     headers: {
       sc_apikey: apiKey,
@@ -160,7 +171,7 @@ export async function scrape(
   // Avoid re-processing items to prevent infinite loops in circular references
   if (processedItemIds.has(currentPath)) {
     console.log(`Skipping already processed item: ${currentPath}`);
-    return { pages: scrapedPages, environment: environmentName };
+    return; // No return value needed
   }
   processedItemIds.add(currentPath);
 
@@ -175,20 +186,31 @@ export async function scrape(
 
     if (!item) {
       console.warn(`No item found for path: ${currentPath}`);
-      return { pages: scrapedPages, environment: environmentName };
+      return; // No return value needed
     }
 
     // Determine if this item is a primary content page (has layout)
-    const isPrimaryContentPage = item.sharedLayout?.value || item.finalLayout?.value;
-    const itemType: 'page' | 'component' = isPrimaryContentPage ? 'page' : 'component';
-    
-    console.log(`Determined itemType for ${item.displayName || item.name} (${item.id}): ${itemType}`);
+    const isPrimaryContentPage =
+      item.sharedLayout?.value || item.finalLayout?.value;
+    const itemType: "page" | "component" = isPrimaryContentPage
+      ? "page"
+      : "component";
 
-    const currentItemFields: Field[] = item.ownFields.map((field: any) => ({
-        fieldName: "PageField."+field.name,
-      fieldValue: field.value || '',
-      componentId: parentPageId ? item.id : undefined, // If this is a component data source, set its ID
-    }));
+    console.log(
+      `Determined itemType for ${item.displayName || item.name} (${
+        item.id
+      }): ${itemType}`
+    );
+
+    const currentItemFields = item.ownFields
+    .filter(field => field.value && field.__typename === "TextField")
+    .map((field) =>
+      mapField(
+        "PageField." + field.name, // fieldname
+        field.value, // fieldvalue
+        parentPageId ? item.id : undefined // componentId
+      )
+    );
 
     const dataSourceIds: string[] = [];
 
@@ -206,8 +228,9 @@ export async function scrape(
     // Process data sources: recursively scrape them and collect their fields
     const componentFieldsFromDataSources: Field[] = [];
     for (const dsId of [...new Set(dataSourceIds)]) {
-      if (dsId === item.id) { // Avoid self-referencing data sources
-          continue;
+      if (dsId === item.id) {
+        // Avoid self-referencing data sources
+        continue;
       }
       try {
         const dsResponse: any = await client.request(GetDataSourceContent, {
@@ -216,38 +239,31 @@ export async function scrape(
         });
 
         const dsItem = dsResponse?.item;
-            if (dsItem) {
-                // Recursively scrape the data source, passing its ID as the parentPageId
-                // This call will return a ContentPayload, but we only care about the fields it collects
-                // We pass the current 'item.id' as the parentPageId for the data source's content
-                // const tempScrapedPages: Page[] = []; // Temporary array for recursive call
-                // await scrape(graphqlEndpoint, apiKey, dsItem.path, language, environmentName, tempScrapedPages, processedItemIds, item.id);
-
-                // Extract fields from the tempScrapedPages (which will contain only the dsItem as a 'page' with its fields)
-                // and add the componentId to them.
-                // if (tempScrapedPages.length > 0) {
-                //const dsPage = tempScrapedPages[0]; // Assuming only one item is returned for a data source ID
-                const componentName = "{"+dsItem.path+"}"; // Use pageTitle as component name, fallback to ID
-                dsItem.ownFields.forEach(field => {
-                    componentFieldsFromDataSources.push({
-                        fieldName: `${componentName}.${field.name}`, // Prepend component name to fieldName
-                        fieldValue: field.value,
-                        componentId: item.id, // This is the ID of the data source item itself
-                    });
-                });
-                // }
-            }
-        } catch (dsError: any) {
-            console.error(`Error scraping data source ${dsId}:`, dsError.message);
+        if (dsItem) {
+          const componentName = "{" + dsItem.path + "}"; // Use pageTitle as component name, fallback to ID
+          dsItem.ownFields
+          .filter(field => field.value && field.__typename === "TextField")
+          .forEach((field) => {
+            componentFieldsFromDataSources.push(
+              mapField(
+                `${componentName}.${field.name}`, // fieldname
+                field.value, // fieldvalue
+                item.id // componentId
+              )
+            );
+          });
         }
+      } catch (dsError: any) {
+        console.error(`Error scraping data source ${dsId}:`, dsError.message);
+      }
     }
 
     // Determine the URL for the current item. Use item.url directly.
-    const itemUrl = item.url || '';
+    const itemUrl = item.url || "";
 
-    // If the current item is a primary content page, add it to scrapedPages
-    if (itemType === 'page') {
-      scrapedPages.push({
+    // If the current item is a primary content page, index it immediately
+    if (itemType === "page") {
+      const pageToProcess: Page = {
         pageId: item.id,
         pagePath: item.path,
         pageTitle: item.displayName || item.name,
@@ -256,17 +272,17 @@ export async function scrape(
         components: [], // This array is now always empty
         itemType: itemType,
         url: itemUrl, // Include the URL here
+      };
+      await processAndIndexContent({
+        pages: [pageToProcess],
+        environment: environmentName,
       });
+      console.log(`Indexed page: ${pageToProcess.pagePath}`);
     } else {
       // If it's a component data source item itself (not a primary page),
-      // and it has a parentPageId (meaning it was called recursively from a page),
-      // its fields are already collected and pushed into componentFieldsFromDataSources by its parent.
-      // We don't push it as a top-level page here.
-      // However, if it's a standalone component item being scraped directly (no parentPageId),
-      // we still need to add its content. This case might need further refinement based on your exact content structure.
-      // For now, if it's a component and has no parentPageId, it will be treated as a top-level page for indexing.
+      // and it has no parentPageId (meaning it's a top-level component being scraped directly), index it.
       if (!parentPageId) {
-        scrapedPages.push({
+        const componentToProcess: Page = {
           pageId: item.id,
           pagePath: item.path,
           pageTitle: item.displayName || item.name,
@@ -275,24 +291,34 @@ export async function scrape(
           components: [],
           itemType: itemType,
           url: itemUrl, // Include the URL here
+        };
+        await processAndIndexContent({
+          pages: [componentToProcess],
+          environment: environmentName,
         });
+        console.log(`Indexed component: ${componentToProcess.pagePath}`);
       }
     }
-
 
     // Recursively scrape children pages
     if (item.hasChildren && item.children && item.children.length > 0) {
       for (const child of item.children) {
-        // Recursively scrape children. If a child is a primary content page,
-        // it will be added to scrapedPages. If it's a component data source,
-        // its fields will be collected by its parent (if the parent is a page).
+        // Recursively scrape children. The indexing will happen inside the recursive call
+        // if the child is a primary content page.
         // The parentPageId for children is the current item's ID if it's a page.
-        await scrape(graphqlEndpoint, apiKey, child.path, language, environmentName, scrapedPages, processedItemIds, item.id);
+        await scrape(
+          graphqlEndpoint,
+          apiKey,
+          child.path,
+          language,
+          environmentName,
+          processedItemIds,
+          item.id
+        );
       }
     }
 
-    return { pages: scrapedPages, environment: environmentName };
-
+    // No return value needed as indexing is done incrementally
   } catch (error: any) {
     console.error(`Error scraping ${currentPath}:`, error.message);
     throw error;

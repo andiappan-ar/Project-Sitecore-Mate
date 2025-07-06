@@ -3,7 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getEnvironmentById } from '@/lib/environments';
 import { scrape } from '@/graphql/scraping';
-import { processAndIndexContent } from '@/index/process-index';
+// Removed: import { processAndIndexContent } from '@/index/process-index';
 
 /**
  * Sanitizes a string to be a valid ChromaDB collection name.
@@ -55,20 +55,20 @@ export async function POST(request: NextRequest) {
     const sanitizedEnvironmentName = sanitizeChromaDbName(environment.name);
     console.log(`Original environment name: "${environment.name}", Sanitized for ChromaDB: "${sanitizedEnvironmentName}"`);
 
-    const structuredContent = await scrape(
+    // The scrape function now handles indexing internally for each page
+    await scrape(
       environment.graphql_endpoint,
       environment.api_key,
       environment.root_path,
       environment.language,
-      // Use the sanitized environment name when scraping and sending to indexing service
       sanitizedEnvironmentName
     );
 
-    const indexingResponse = await processAndIndexContent(structuredContent);
+    // Removed: const indexingResponse = await processAndIndexContent(structuredContent);
 
     return NextResponse.json({
-      message: 'Scraping and indexing initiated successfully.',
-      data: indexingResponse,
+      message: 'Scraping and indexing initiated successfully.', // Message updated
+      // Removed: data: indexingResponse,
     });
   } catch (error) {
     console.error('Error in /api/scrape:', error);
