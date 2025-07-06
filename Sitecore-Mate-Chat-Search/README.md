@@ -23,6 +23,8 @@ It features a **Next.js** frontend for environment management and search, and a 
 ## 🏗️ Architecture
 
 The solution is split into two main components:
+![Sitecore-Mate-Chat-Search](https://github.com/user-attachments/assets/8c30a337-d69d-4253-841d-e1d480c306d9)
+
 
 ### 1. ⚛️ Next.js Frontend (`Sitecore-Content-Scrapper-Website`)
 
