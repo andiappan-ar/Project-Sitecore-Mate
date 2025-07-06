@@ -1,7 +1,7 @@
 # Project-Sitecore-Mate
 
 > 🧑‍💻 Some days, AI is the teacher; other days, the eager student.\
-> 🤖 But these days, AI’s my mate.
+> 🤖 But these days, AI’s my mate. -Andi
 
 Welcome to **Project Sitecore Mate**!
 
@@ -16,7 +16,6 @@ Browse the folders to explore current work-in-progress and upcoming tools!
 
 ### 🚀 BETA Release Here: [Sitecore-Mate-Chat-Search](https://github.com/andiappan-ar/Project-Sitecore-Mate/tree/main/Sitecore-Mate-Chat-Search)
 *A chatbot search assistant who understands Sitecore website content (with tools to scrape and learn your Sitecore instance).*
-![Sitecore-Mate-Chat-Search](https://github.com/user-attachments/assets/d62210b3-6b94-49d1-adb1-c0c7ec7dfbb9)
 
 ### 🛠️ POC-WIP: Sitecore-Mate-Dev
 *A developer assistant to help with coding, deployments, and even creation of Sitecore items and templates.*

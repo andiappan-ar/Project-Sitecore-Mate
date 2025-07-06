@@ -1,8 +1,5 @@
 # Mate - Sitecore Chat Search
 
-> 🧑‍💻 Some days, AI is the teacher; other days, the eager student.\
-> 🤖 But these days, AI’s my mate.
-
 ## Overview
 
 **Sitecore Chat Search** is a solution designed to scrape, index, and query content from Sitecore instances, enabling semantic search and Retrieval-Augmented Generation (RAG) capabilities.\
@@ -10,7 +7,7 @@ It features a **Next.js** frontend for environment management and search, and a 
 
 **Key features include:**
 
-- 🧩 **Advanced Content Processing:** Scrapes page-level and component-level fields, with HTML cleaning for high-quality text.
+- 🧩 **Content Scrapping:** Scrapes page-level and component-level fields, with HTML cleaning for high-quality text.
 - 📏 **Intelligent Chunking:** Recursively splits content into optimal chunks (100–300 tokens, 10–20 overlap) for context-preserving embeddings.
 - 📦 **Vector Database Integration:** Uses ChromaDB for efficient semantic search.
 - 🤹 **Flexible LLM Support:** Works with Gemini, OpenAI, and Ollama models for RAG-based QA and summarization.
@@ -24,7 +21,8 @@ It features a **Next.js** frontend for environment management and search, and a 
 
 The solution is split into two main components:
 
-![Sitecore-Mate-Chat-Search](https://github.com/user-attachments/assets/d62210b3-6b94-49d1-adb1-c0c7ec7dfbb9)
+
+![Sitecore-Mate-Chat-Search](https://github.com/user-attachments/assets/adffa7df-337b-4dcb-9a5b-ea4b631ea231)
 
 
 
@@ -163,9 +161,10 @@ The app runs at [http://localhost:3000](http://localhost:3000).
 
 ---
 
-## 🤝 Contribution
+## 🤝 ToDo
 
-Contributions welcome—feel free to open issues or PRs!
+- Authentication
+- Scrapping - media , multiplist , GraphqL component output
 
 ## 📜 License
 
