@@ -1,8 +1,5 @@
 # Mate - Sitecore Chat Search
 
-> 🧑‍💻 Some days, AI is the teacher; other days, the eager student.\
-> 🤖 But these days, AI’s my mate.
-
 ## Overview
 
 **Sitecore Chat Search** is a solution designed to scrape, index, and query content from Sitecore instances, enabling semantic search and Retrieval-Augmented Generation (RAG) capabilities.\
