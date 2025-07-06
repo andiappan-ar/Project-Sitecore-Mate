@@ -47,6 +47,7 @@ class Field(BaseModel):
     fieldName: str
     fieldValue: str
     componentId: Optional[str] = None
+    renderingUid: Optional[str] = None  # Optional: to capture the rendering UID if needed
 
 class Component(BaseModel):
     componentId: str
@@ -97,10 +98,44 @@ def sanitize_chroma_db_name(name: str) -> str:
     sanitized = sanitized[:63]
     return sanitized
 
+# New helper function to get the most reliable rendering UID
+def get_effective_rendering_uid(field: Field) -> Optional[str]:
+    """
+    Determines the most appropriate rendering UID for a field.
+    Prioritizes the field's 'renderinguid' property.
+    If not available, attempts to extract it from 'fieldName' if it matches the expected format:
+    'componentName.AllFields.itemId.dsId.renderingUid'.
+    """
+    if field.renderingUid:
+        return field.renderingUid
+    
+    # Attempt to extract from fieldName: componentName.AllFields.itemId.dsId.renderingUid
+    parts = field.fieldName.split('.')
+    # Check for at least 5 parts and that the second part is 'AllFields' (case-insensitive)
+    if len(parts) >= 5 and parts[1].lower() == 'allfields':
+        potential_rendering_uid = parts[-1]
+        # Basic check if it looks like a GUID (common for Sitecore rendering UIDs)
+        if re.match(r'^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$', potential_rendering_uid):
+            return potential_rendering_uid
+        # If it's not a GUID but you still want to use it as a UID from fieldName, return it.
+        # This makes it more flexible if renderingUids are not strictly GUIDs.
+        # return potential_rendering_uid # Uncomment this if renderingUids are not always GUIDs
+        
+    return None
 
-def generate_deterministic_id(page_id: str, field_name: str, chunk_index: int, component_id: Optional[str] = None) -> str:
-    """Creates a unique and deterministic ID for a chunk."""
-    base_string = f"{page_id}-{component_id or ''}-{field_name}-{chunk_index}"
+
+def generate_deterministic_id(page_id: str, field_name: str, chunk_index: int, component_id: Optional[str] = None, rendering_uid: Optional[str] = None) -> str:
+    """Creates a unique and deterministic ID for a chunk, including rendering_uid if present."""
+    # Ensure all components are strings for consistent hashing
+    component_id_str = component_id if component_id is not None else ''
+    rendering_uid_str = rendering_uid if rendering_uid is not None else ''
+
+    base_string = f"{page_id}-{component_id_str}-{rendering_uid_str}-{field_name}-{chunk_index}"
+    
+    # --- ADD THIS DEBUG LOG ---
+    print(f"DEBUG: Generating ID for base_string: '{base_string}'")
+    # --- END DEBUG LOG ---
+
     return hashlib.sha256(base_string.encode('utf-8')).hexdigest()
 
 def get_text_splitter() -> RecursiveCharacterTextSplitter:
@@ -161,8 +196,6 @@ async def advanced_rag_indexing(payload: ContentPayload, collection, text_splitt
         await log_queue.put(f"Processing {page_type_label} {page_idx + 1}/{len(payload.pages)}: {page.pageTitle} (ID: {page.pageId})")
 
         # Process Page-Level Fields for summary
-        # Includes fields where componentId is None OR componentId is equal to pageId,
-        # and excludes rendering fields.
         page_field_values_for_summary = {}
         for field in page.fields:
             if field.fieldName in ["__Renderings", "__Final Renderings"]:
@@ -173,7 +206,6 @@ async def advanced_rag_indexing(payload: ContentPayload, collection, text_splitt
                 await log_queue.put(f"    (Skipping field '{field.fieldName}' for page summary: field value is empty.)")
                 continue
 
-            # This is the core logic for page-level summary eligibility
             if field.componentId is None or field.componentId == page.pageId:
                 page_field_values_for_summary[field.fieldName] = BeautifulSoup(field.fieldValue, "html.parser").get_text(separator=" ", strip=True)
             else:
@@ -183,21 +215,21 @@ async def advanced_rag_indexing(payload: ContentPayload, collection, text_splitt
         if page_field_values_for_summary:
             await log_queue.put(f"    Raw page fields for summary: {page_field_values_for_summary}")
             page_summary_prompt = build_page_summary_prompt(page_field_values_for_summary)
-            await log_queue.put(f"    Generated page summary prompt:\n{page_summary_prompt[:500]}...") # Truncate for log readability
-
+            await log_queue.put(f"    Generated page summary prompt:\n{page_summary_prompt[:500]}...")
             enhanced_page_text = await enhance_text_with_llm(page_summary_prompt, f"page '{page.pageTitle}' fields")
             if enhanced_page_text:
-                await log_queue.put(f"    LLM-generated page summary: {enhanced_page_text[:500]}...") # Truncate for log readability
+                await log_queue.put(f"    LLM-generated page summary: {enhanced_page_text[:500]}...")
                 page_chunks = text_splitter.split_text(enhanced_page_text)
                 await log_queue.put(f"    Page-level fields (enhanced summary) split into {len(page_chunks)} chunks.")
                 for i, chunk_text in enumerate(page_chunks):
+                    # No renderingUid for page summary as it's not tied to a specific rendering instance
                     chunk_id = generate_deterministic_id(page.pageId, "page_summary", i)
                     metadata = {
                         "page_id": page.pageId,
                         "page_path": page.pagePath,
                         "page_title": page.pageTitle,
                         "page_url": page.url,
-                        "component_id": "", # Page summaries don't belong to a specific component ID
+                        "component_id": "",
                         "field_name": "page_summary",
                         "chunk_index": i,
                         "language": page.language,
@@ -215,36 +247,46 @@ async def advanced_rag_indexing(payload: ContentPayload, collection, text_splitt
         if not page.components:
             await log_queue.put(f"    (No explicit components found in payload for page '{page.pageTitle}'. Checking for virtual components from page fields based on fieldName prefix.)")
             
-            # --- START NEW LOGGING HERE ---
             await log_queue.put(f"    All fields for page '{page.pageTitle}' before virtual component grouping:")
             for field in page.fields:
                 field_val_preview = (field.fieldValue[:100] + '...') if len(field.fieldValue) > 100 else field.fieldValue
-                await log_queue.put(f"      - fieldName: '{field.fieldName}', componentId: '{field.componentId}', fieldValue: '{field_val_preview}'")
-            # --- END NEW LOGGING HERE ---
+                await log_queue.put(f"      - fieldName: '{field.fieldName}', componentId: '{field.componentId}', fieldValue: '{field_val_preview}', renderinguid (property): '{field.renderingUid}'")
 
-            # Virtual grouping by component name prefix in fieldName, excluding 'Page.AllFields'
+            # Virtual grouping by (component name prefix, effective renderinguid or fallback)
+            # This ensures that if the same component prefix appears multiple times (e.g., 'Hero Banner')
+            # but is associated with different rendering UIDs (either from property or fieldName),
+            # they are treated as distinct virtual component instances.
             virtual_components = defaultdict(list)
             for field in page.fields:
                 if "." in field.fieldName:
-                    comp_prefix = field.fieldName.split(".")[0]
-                    if comp_prefix.lower() != "page": # Exclude "Page.AllFields" and similar
-                        virtual_components[comp_prefix].append(field)
+                    comp_parts = field.fieldName.split(".")
+                    comp_prefix = comp_parts[0]
 
-            if not virtual_components: # Add a log if no virtual components were found after this logic
+                    if comp_prefix.lower() != "page": # Exclude "Page.AllFields" and similar
+                        effective_rendering_uid_for_grouping = get_effective_rendering_uid(field)
+
+                        # Use "NO_RENDER_UID" as a placeholder for the grouping key if no effective UID is found
+                        grouping_key_render_uid = effective_rendering_uid_for_grouping if effective_rendering_uid_for_grouping else "NO_RENDER_UID"
+                        grouping_key = (comp_prefix, grouping_key_render_uid)
+                        virtual_components[grouping_key].append(field)
+
+            if not virtual_components:
                 await log_queue.put(f"    (No virtual components identified from fieldName prefixes for page '{page.pageTitle}'.)")
 
-            for comp_name, fields_list in virtual_components.items(): # Changed comp_id to comp_name to match the key
-                # Use the comp_name directly for component name
-                # For unique ID, use componentId if available from a field, or create a hash from comp_name
-                # If your fields consistently have a componentId that refers to the instance of the component, use that.
-                # If they don't, you might need to synthesize one.
-                # Given your payload, field.componentId currently matches page.pageId, so we'll use a synthesized one.
-                virtual_comp_instance_id = hashlib.sha256(f"{page.pageId}-{comp_name}".encode('utf-8')).hexdigest()[:16] # Generate a unique ID for virtual component instance
+            for (comp_name_prefix, grouping_render_uid), fields_list in virtual_components.items():
+                # The actual rendering UID used for the deterministic ID will be empty if "NO_RENDER_UID" was used for grouping
+                actual_rendering_uid_for_id = grouping_render_uid if grouping_render_uid != "NO_RENDER_UID" else ''
                 
-                await log_queue.put(f"  - Processing Virtual Component: {comp_name} (Generated ID: {virtual_comp_instance_id}) on Page ID: {page.pageId}")
+                # Create a unique key for this virtual component instance that includes the rendering UID
+                virtual_comp_instance_key = f"{comp_name_prefix}{'_' + actual_rendering_uid_for_id if actual_rendering_uid_for_id else ''}"
+
+                # Generate a unique ID for this virtual component instance
+                virtual_comp_instance_id = hashlib.sha256(f"{page.pageId}-{virtual_comp_instance_key}".encode('utf-8')).hexdigest()[:16]
+                
+                await log_queue.put(f"  - Processing Virtual Component: {comp_name_prefix} (Generated ID: {virtual_comp_instance_id}) on Page ID: {page.pageId}, Grouping Render UID: {actual_rendering_uid_for_id if actual_rendering_uid_for_id else 'None'}")
 
                 component_field_values_for_summary = {}
-                for field in fields_list: # Iterate through fields in this virtual component
+                for field in fields_list:
                     if field.fieldName in ["__Renderings", "__Final Renderings"]:
                         await log_queue.put(f"    (Skipping virtual component field '{field.fieldName}' for summary: it's a rendering field.)")
                         continue
@@ -254,40 +296,40 @@ async def advanced_rag_indexing(payload: ContentPayload, collection, text_splitt
                     component_field_values_for_summary[field.fieldName] = BeautifulSoup(field.fieldValue, "html.parser").get_text(separator=" ", strip=True)
 
                 if component_field_values_for_summary:
-                    await log_queue.put(f"    Raw virtual component fields for summary ('{comp_name}'): {component_field_values_for_summary}")
-                    component_summary_prompt = build_component_summary_prompt(comp_name, component_field_values_for_summary)
+                    await log_queue.put(f"    Raw virtual component fields for summary ('{comp_name_prefix}'): {component_field_values_for_summary}")
+                    component_summary_prompt = build_component_summary_prompt(comp_name_prefix, component_field_values_for_summary)
                     await log_queue.put(f"    Generated virtual component summary prompt:\n{component_summary_prompt[:500]}...")
-                    enhanced_component_text = await enhance_text_with_llm(component_summary_prompt, f"virtual component '{comp_name}' fields")
+
+                    enhanced_component_text = await enhance_text_with_llm(component_summary_prompt, f"virtual component '{comp_name_prefix}' fields")
                     if enhanced_component_text:
                         await log_queue.put(f"    LLM-generated virtual component summary: {enhanced_component_text[:500]}...")
                         component_chunks = text_splitter.split_text(enhanced_component_text)
                         await log_queue.put(f"    Virtual Component fields (enhanced summary) split into {len(component_chunks)} chunks.")
                         for i, chunk_text in enumerate(component_chunks):
-                            # Use the generated virtual_comp_instance_id
-                            chunk_id = generate_deterministic_id(page.pageId, f"component_summary_{comp_name}", i, virtual_comp_instance_id)
+                            # The field_name for the summary itself should reflect its uniqueness
+                            summary_field_name = f"component_summary_{virtual_comp_instance_key}"
+                            chunk_id = generate_deterministic_id(page.pageId, summary_field_name, i, virtual_comp_instance_id, actual_rendering_uid_for_id)
                             metadata = {
                                 "page_id": page.pageId,
                                 "page_path": page.pagePath,
                                 "page_title": page.pageTitle,
                                 "page_url": page.url,
-                                "component_id": virtual_comp_instance_id, # Use generated ID
-                                "field_name": f"component_summary_{comp_name}",
+                                "component_id": virtual_comp_instance_id, # Use generated ID for metadata
+                                "field_name": summary_field_name, # Use the more specific summary field name
                                 "chunk_index": i,
                                 "language": page.language,
                                 "created_at": datetime.datetime.utcnow().isoformat(),
-                                "source_type": "component_summary_virtual" # Differentiate source
+                                "source_type": "component_summary_virtual"
                             }
                             all_chunks.append(chunk_text)
                             all_metadatas.append(metadata)
                             all_ids.append(chunk_id)
                 else:
-                    await log_queue.put(f"    (No significant fields found for summary in virtual component '{comp_name}')")
+                    await log_queue.put(f"    (No significant fields found for summary in virtual component '{comp_name_prefix}')")
         # --- END NEW LOGIC FOR VIRTUAL COMPONENTS ---
 
 
-        # Original processing for explicit components (this block will run if page.components is NOT empty)
-        # Note: This loop will be skipped if page.components is empty, so no explicit component logs
-        # will appear in that case.
+        # Original processing for explicit components
         for comp_idx, component in enumerate(page.components):
             await log_queue.put(f"  - Processing Explicit Component {comp_idx + 1}: {component.componentName} (ID: {component.componentId}) on Page ID: {page.pageId}")
             
@@ -304,7 +346,7 @@ async def advanced_rag_indexing(payload: ContentPayload, collection, text_splitt
             if component_field_values_for_summary:
                 await log_queue.put(f"    Raw explicit component fields for summary ('{component.componentName}'): {component_field_values_for_summary}")
                 component_summary_prompt = build_component_summary_prompt(component.componentName, component_field_values_for_summary)
-                await log_queue.put(f"    Generated explicit component summary prompt:\n{component_summary_prompt[:500]}...") # Truncate for log readability
+                await log_queue.put(f"    Generated explicit component summary prompt:\n{component_summary_prompt[:500]}...")
 
                 enhanced_component_text = await enhance_text_with_llm(component_summary_prompt, f"explicit component '{component.componentName}' fields")
                 if enhanced_component_text:
@@ -312,14 +354,23 @@ async def advanced_rag_indexing(payload: ContentPayload, collection, text_splitt
                     component_chunks = text_splitter.split_text(enhanced_component_text)
                     await log_queue.put(f"    Explicit Component fields (enhanced summary) split into {len(component_chunks)} chunks.")
                     for i, chunk_text in enumerate(component_chunks):
-                        chunk_id = generate_deterministic_id(page.pageId, f"component_summary_{component.componentName}", i, component.componentId)
+                        # Collect all unique effective rendering UIDs from the component's fields for its summary
+                        comp_relevant_rendering_uids = sorted(list(set(get_effective_rendering_uid(f) for f in component.fields if get_effective_rendering_uid(f))))
+                        comp_rendering_uid_string = "-".join(comp_relevant_rendering_uids)
+
+                        # Make the summary field name unique by including rendering UIDs if present
+                        explicit_comp_summary_field_name = f"component_summary_{component.componentName}"
+                        if comp_rendering_uid_string:
+                            explicit_comp_summary_field_name += f"_{comp_rendering_uid_string}"
+
+                        chunk_id = generate_deterministic_id(page.pageId, explicit_comp_summary_field_name, i, component.componentId, comp_rendering_uid_string)
                         metadata = {
                             "page_id": page.pageId,
                             "page_path": page.pagePath,
                             "page_title": page.pageTitle,
                             "page_url": page.url,
                             "component_id": component.componentId,
-                            "field_name": f"component_summary_{component.componentName}",
+                            "field_name": explicit_comp_summary_field_name, # Update metadata field_name
                             "chunk_index": i,
                             "language": page.language,
                             "created_at": datetime.datetime.utcnow().isoformat(),
@@ -334,46 +385,51 @@ async def advanced_rag_indexing(payload: ContentPayload, collection, text_splitt
         # Determine which fields have been summarized to avoid re-indexing them as individual fields
         summarized_field_names_on_page = set(page_field_values_for_summary.keys())
         
-        summarized_component_field_ids = set()
-        
+        # Using a set of (page_id, effective_component_id, field_name) to track summarized fields
+        summarized_field_identifier_tuples = set()
+
         # Capture fields from explicit components that were summarized
         for comp in page.components:
-            comp_fields_for_summary = {
-                f.fieldName: BeautifulSoup(f.fieldValue, "html.parser").get_text(separator=" ", strip=True)
-                for f in comp.fields
-                if f.fieldValue and f.fieldName not in ["__Renderings", "__Final Renderings"]
-            }
-            if comp_fields_for_summary:
+            # Check if this component had fields that contributed to its summary
+            component_had_fields_summarized = False
+            for f_check in comp.fields:
+                if f_check.fieldValue and f_check.fieldName not in ["__Renderings", "__Final Renderings"]:
+                    component_had_fields_summarized = True
+                    break
+            
+            if component_had_fields_summarized:
                 for f in comp.fields:
                     if f.fieldValue and f.fieldName not in ["__Renderings", "__Final Renderings"]:
-                        summarized_component_field_ids.add(f"{f.componentId}_{f.fieldName}")
+                        summarized_field_identifier_tuples.add((page.pageId, comp.componentId, f.fieldName))
 
         # Capture fields from virtual components that were summarized
-        # This needs to run whether page.components was empty or not, to correctly track all summarized fields
-        # Re-create virtual_components based on the same logic used for processing
         virtual_components_for_summary_tracking = defaultdict(list)
         for field in page.fields:
             if "." in field.fieldName:
-                comp_prefix = field.fieldName.split(".")[0]
+                comp_parts = field.fieldName.split(".")
+                comp_prefix = comp_parts[0]
                 if comp_prefix.lower() != "page":
-                    virtual_components_for_summary_tracking[field.componentId if field.componentId else comp_prefix].append(field)
+                    effective_rendering_uid_for_grouping_tracking = get_effective_rendering_uid(field)
+                    grouping_key_render_uid_tracking = effective_rendering_uid_for_grouping_tracking if effective_rendering_uid_for_grouping_tracking else "NO_RENDER_UID"
+                    grouping_key_tracking = (comp_prefix, grouping_key_render_uid_tracking)
+                    virtual_components_for_summary_tracking[grouping_key_tracking].append(field)
         
-        for comp_key, fields_list in virtual_components_for_summary_tracking.items():
-            comp_fields_for_summary = {
-                f.fieldName: BeautifulSoup(f.fieldValue, "html.parser").get_text(separator=" ", strip=True)
-                for f in fields_list
-                if f.fieldValue and f.fieldName not in ["__Renderings", "__Final Renderings"]
-            }
-            if comp_fields_for_summary:
-                # Use the actual componentId from the field if available, otherwise the derived comp_key
-                for f in fields_list:
-                    if f.fieldValue and f.fieldName not in ["__Renderings", "__Final Renderings"]:
-                        # Correctly use f.componentId if present, falling back to a derived ID if needed
-                        # The key in summarized_component_field_ids should match how you generated the chunk_id
-                        # For virtual components, we used a generated ID earlier: virtual_comp_instance_id
-                        # We need to ensure consistency. Let's use the field's componentId as the base for the key.
-                        # If field.componentId is pageId for these, that's what will be used in the key.
-                        summarized_component_field_ids.add(f"{f.componentId}_{f.fieldName}")
+        for (comp_name_prefix_tracking, grouping_render_uid_tracking), fields_list_tracking in virtual_components_for_summary_tracking.items():
+            # Check if this virtual component had fields that contributed to its summary
+            virtual_component_had_fields_summarized = False
+            for f_check in fields_list_tracking:
+                if f_check.fieldValue and f_check.fieldName not in ["__Renderings", "__Final Renderings"]:
+                    virtual_component_had_fields_summarized = True
+                    break
+
+            if virtual_component_had_fields_summarized:
+                actual_rendering_uid_for_id_tracking = grouping_render_uid_tracking if grouping_render_uid_tracking != "NO_RENDER_UID" else ''
+                virtual_comp_instance_key_tracking = f"{comp_name_prefix_tracking}{'_' + actual_rendering_uid_for_id_tracking if actual_rendering_uid_for_id_tracking else ''}"
+                virtual_comp_instance_id_tracking = hashlib.sha256(f"{page.pageId}-{virtual_comp_instance_key_tracking}".encode('utf-8')).hexdigest()[:16]
+
+                for f_track in fields_list_tracking:
+                    if f_track.fieldValue and f_track.fieldName not in ["__Renderings", "__Final Renderings"]:
+                        summarized_field_identifier_tuples.add((page.pageId, virtual_comp_instance_id_tracking, f_track.fieldName))
 
 
         for field_idx, field in enumerate(page.fields):
@@ -391,11 +447,28 @@ async def advanced_rag_indexing(payload: ContentPayload, collection, text_splitt
                 continue
 
             # Check if this field was covered by a component summary (explicit or virtual)
-            is_part_of_component_summary = field.componentId and \
-                                           f"{field.componentId}_{field.fieldName}" in summarized_component_field_ids
+            is_part_of_component_summary = False
+            
+            # 1. Check if it contributed to an EXPLICIT component summary
+            if (page.pageId, field.componentId, field.fieldName) in summarized_field_identifier_tuples:
+                is_part_of_component_summary = True
+            
+            # 2. Check if it contributed to a VIRTUAL component summary (only if not already covered by explicit)
+            if not is_part_of_component_summary and "." in field.fieldName:
+                comp_parts = field.fieldName.split(".")
+                comp_prefix = comp_parts[0]
+                if comp_prefix.lower() != "page":
+                    effective_rendering_uid_for_field_check = get_effective_rendering_uid(field)
+                    grouping_key_render_uid_for_field_check = effective_rendering_uid_for_field_check if effective_rendering_uid_for_field_check else "NO_RENDER_UID"
+                    
+                    virtual_comp_instance_key_for_field_check = f"{comp_prefix}{'_' + grouping_key_render_uid_for_field_check if grouping_key_render_uid_for_field_check != 'NO_RENDER_UID' else ''}"
+                    potential_virtual_comp_instance_id_for_field = hashlib.sha256(f"{page.pageId}-{virtual_comp_instance_key_for_field_check}".encode('utf-8')).hexdigest()[:16]
+
+                    if (page.pageId, potential_virtual_comp_instance_id_for_field, field.fieldName) in summarized_field_identifier_tuples:
+                        is_part_of_component_summary = True
 
             if is_part_of_component_summary:
-                await log_queue.put(f"    (Skipping individual component field '{field.fieldName}' as its component '{field.componentId}' was summarized.)")
+                await log_queue.put(f"    (Skipping individual component field '{field.fieldName}' as its component '{field.componentId or 'virtual'}' was summarized.)")
                 continue
 
             # If not skipped, process as an individual field
@@ -415,7 +488,8 @@ async def advanced_rag_indexing(payload: ContentPayload, collection, text_splitt
             chunks = text_splitter.split_text(text)
             await log_queue.put(f"    Split into {len(chunks)} chunks. Original text length: {len(text)}")
             for i, chunk_text in enumerate(chunks):
-                chunk_id = generate_deterministic_id(page.pageId, field.fieldName, i, field.componentId)
+                field_specific_rendering_uid = get_effective_rendering_uid(field)
+                chunk_id = generate_deterministic_id(page.pageId, field.fieldName, i, field.componentId, field_specific_rendering_uid)
                 metadata = {
                     "page_id": page.pageId,
                     "page_path": page.pagePath,
@@ -484,7 +558,9 @@ async def index_content(payload: ContentPayload):
     """
     try:
         print("\n--- Incoming Payload to Python Indexing Service ---")
-        print(payload.model_dump_json(indent=2))
+        # --- NEW LOG ADDED HERE ---
+        print(f"Full Incoming Payload: {payload.model_dump_json(indent=2)}")
+        # --- END NEW LOG ---
         print("---------------------------------------------------\n")
 
         # Sanitize the environment name for ChromaDB
@@ -526,7 +602,7 @@ async def index_content(payload: ContentPayload):
                     elif field.componentId:
                         field_log_label = "component field"
                     
-                    await log_queue.put(f"  - Processing {field_log_label} {field_idx + 1}: {field.fieldName} (Page ID: {page.pageId})")
+                    await log_queue.put(f"  - Processing {field_log_label} {field_idx + 1}: {field.fieldName} (Page ID: {page.pageId}), renderinguid (property): '{field.renderingUid}'")
                     
                     soup = BeautifulSoup(field.fieldValue, "html.parser")
                     text = soup.get_text(separator=" ", strip=True)
@@ -538,7 +614,8 @@ async def index_content(payload: ContentPayload):
                     chunks = text_splitter.split_text(text)
                     await log_queue.put(f"    Split into {len(chunks)} chunks. Original text length: {len(text)}")
                     for i, chunk_text in enumerate(chunks):
-                        chunk_id = generate_deterministic_id(page.pageId, field.fieldName, i, field.componentId)
+                        field_specific_rendering_uid = get_effective_rendering_uid(field)
+                        chunk_id = generate_deterministic_id(page.pageId, field.fieldName, i, field.componentId, field_specific_rendering_uid)
                         metadata = {
                             "page_id": page.pageId,
                             "page_path": page.pagePath,

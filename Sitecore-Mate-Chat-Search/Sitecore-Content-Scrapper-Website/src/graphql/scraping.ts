@@ -9,6 +9,7 @@ export interface Field {
   fieldName: string;
   fieldValue: string;
   componentId?: string; // Added to link field to its originating component data source
+  renderingUid?:string; // Optional: to capture the rendering UID if needed
 }
 
 // Define the structure of a component as expected by the backend
@@ -36,6 +37,13 @@ export interface Page {
 export interface ContentPayload {
   pages: Page[];
   environment: string;
+}
+
+// New interface for detailed data source information
+export interface DataSourceDetail {
+  dsId: string;
+  renderingName?: string;
+  renderingUid?: string;
 }
 
 // GraphQL query to get page content and layout information
@@ -90,54 +98,57 @@ const GetDataSourceContent = gql`
   }
 `;
 
-// Helper to extract data source IDs from layout XML
-function extractDataSourceIds(layoutXml: string): string[] {
+// Helper to extract data source details from layout XML
+function extractDataSourceDetails(layoutXml: string): DataSourceDetail[] {
   const parser = new XMLParser({
     ignoreAttributes: false,
     attributeNamePrefix: "@_",
     allowBooleanAttributes: true,
   });
   const jsonObj = parser.parse(layoutXml);
-  const ids: string[] = [];
+  const details: DataSourceDetail[] = [];
 
-  // Function to recursively find data source IDs
-  const findIds = (obj: any) => {
+  // Function to recursively find data source details
+  const findDetails = (obj: any) => {
     if (obj && typeof obj === "object") {
-      // Check for rendering elements
+      // Check for rendering elements (r.d.r structure)
       if (obj.r && obj.r.d && obj.r.d.r) {
         const renderings = Array.isArray(obj.r.d.r) ? obj.r.d.r : [obj.r.d.r];
         for (const rendering of renderings) {
-          // Check for both '@_ds' and '@_s:ds' (with namespace prefix)
-          if (rendering["@_ds"]) {
-            ids.push(rendering["@_ds"]);
-          } else if (rendering["@_s:ds"]) {
-            // Added check for namespace prefixed attribute
-            ids.push(rendering["@_s:ds"]);
+          const dsId = rendering["@_ds"] || rendering["@_s:ds"]; // Check for both
+          if (dsId) {
+            details.push({
+              dsId: dsId,
+              renderingName: rendering["@_name"] || undefined, // Access rendering name
+              renderingUid: rendering["@_uid"] || undefined, // Access rendering UID
+            });
           }
           // Recursively check children renderings
           if (rendering.d && rendering.d.r) {
-            findIds(rendering.d.r);
+            findDetails(rendering.d.r);
           }
         }
       }
       // General recursion for other objects/arrays
       for (const key in obj) {
         if (Object.prototype.hasOwnProperty.call(obj, key)) {
-          findIds(obj[key]);
+          findDetails(obj[key]);
         }
       }
     }
   };
 
-  findIds(jsonObj);
-  return ids.filter((id) => id); // Filter out any empty or null IDs
+  findDetails(jsonObj);
+  // Filter out any entries without a valid dsId
+  return details.filter((detail) => detail.dsId);
 }
 
-function mapField(fieldName, fieldValue, componentId) {
+function mapField(fieldName: string, fieldValue: string, componentId?: string, renderingUid?: string): Field {
   return {
     fieldName: fieldName,
     fieldValue: fieldValue,
     componentId: componentId,
+    renderingUid: renderingUid, // Optional: include rendering UID if available
   };
 }
 
@@ -161,7 +172,6 @@ export async function scrape(
   processedItemIds: Set<string> = new Set(),
   parentPageId?: string // New parameter: ID of the page that owns this content
 ): Promise<void> {
-  // Changed return type to void
   const client = new GraphQLClient(graphqlEndpoint, {
     headers: {
       sc_apikey: apiKey,
@@ -171,7 +181,7 @@ export async function scrape(
   // Avoid re-processing items to prevent infinite loops in circular references
   if (processedItemIds.has(currentPath)) {
     console.log(`Skipping already processed item: ${currentPath}`);
-    return; // No return value needed
+    return;
   }
   processedItemIds.add(currentPath);
 
@@ -186,7 +196,7 @@ export async function scrape(
 
     if (!item) {
       console.warn(`No item found for path: ${currentPath}`);
-      return; // No return value needed
+      return;
     }
 
     // Determine if this item is a primary content page (has layout)
@@ -202,15 +212,14 @@ export async function scrape(
       }): ${itemType}`
     );
 
-    // --- Start of changes for currentItemFields ---
     let aggregatedPageValue = "";
     const seenPageFieldValues = new Set<string>();
 
     item.ownFields
-      .filter(field => field.value && field.__typename === "TextField")
-      .forEach((field) => {
+      .filter((field: any) => field.value && field.__typename === "TextField")
+      .forEach((field: any) => {
         if (!seenPageFieldValues.has(field.value)) {
-          aggregatedPageValue += `${field.value} `; // Concatenate unique values with a space
+          aggregatedPageValue += `${field.value} `;
           seenPageFieldValues.add(field.value);
         }
       });
@@ -219,85 +228,91 @@ export async function scrape(
     if (aggregatedPageValue.trim().length > 0) {
       currentItemFields.push(
         mapField(
-          "Page.AllFields", // New fieldName: Page.AllFields
-          aggregatedPageValue.trim(), // Aggregated and unique fieldValue
-          item.id // componentId (the page's own ID)
+          "Page.AllFields",
+          aggregatedPageValue.trim(),
+          item.id
         )
       );
     }
-    // --- End of changes for currentItemFields ---
 
-    const dataSourceIds: string[] = [];
+    // Changed to DataSourceDetail[]
+    const dataSourceCollection: DataSourceDetail[] = []; 
 
-    // Extract data source IDs from sharedLayout
+    // Extract data source details from sharedLayout
     if (item.sharedLayout?.value) {
-      const ids = extractDataSourceIds(item.sharedLayout.value);
-      dataSourceIds.push(...ids);
+      const details = extractDataSourceDetails(item.sharedLayout.value);
+      dataSourceCollection.push(...details);
     }
-    // Extract data source IDs from finalLayout
+    // Extract data source details from finalLayout
     if (item.finalLayout?.value) {
-      const ids = extractDataSourceIds(item.finalLayout.value);
-      dataSourceIds.push(...ids);
+      const details = extractDataSourceDetails(item.finalLayout.value);
+      dataSourceCollection.push(...details);
     }
 
     // Process data sources: recursively scrape them and collect their fields
     const componentFieldsFromDataSources: Field[] = [];
-    for (const dsId of [...new Set(dataSourceIds)]) {
-      if (dsId === item.id) {
+    // Use a Set to store unique dsIds to avoid processing the same data source multiple times
+    const processedDataSourceIds = new Set<string>();
+
+    for (const dsDetail of dataSourceCollection) { // Loop over DataSourceDetail
+      if (dsDetail.dsId === item.id) {
         // Avoid self-referencing data sources
         continue;
       }
+      if (processedDataSourceIds.has(dsDetail.dsId)) {
+        continue; // Skip if already processed
+      }
+      processedDataSourceIds.add(dsDetail.dsId);
+
       try {
         const dsResponse: any = await client.request(GetDataSourceContent, {
-          id: dsId,
+          id: dsDetail.dsId, // Use dsId from the detail object
           language: language,
         });
 
         const dsItem = dsResponse?.item;
         if (dsItem) {
-          const componentName = dsItem.displayName || dsItem.name || dsItem.id; // Use display name, then name, then ID
+          const componentName = dsItem.displayName || dsItem.name || dsItem.id;
           let aggregatedComponentValue = "";
-          const seenComponentFieldValues = new Set<string>(); // New: Set to track seen component field values
+          const seenComponentFieldValues = new Set<string>();
 
-          // Aggregate all text field values from the component, avoiding duplicates
           dsItem.ownFields
-            .filter(field => field.value && field.__typename === "TextField")
-            .forEach((field) => {
-              if (!seenComponentFieldValues.has(field.value)) { // Check for duplicates
-                aggregatedComponentValue += `${field.value} `; // Concatenate unique values with a space
-                seenComponentFieldValues.add(field.value); // Add to seen set
+            .filter((field: any) => field.value && field.__typename === "TextField")
+            .forEach((field: any) => {
+              if (!seenComponentFieldValues.has(field.value)) {
+                aggregatedComponentValue += `${field.value} `;
+                seenComponentFieldValues.add(field.value);
               }
             });
 
           if (aggregatedComponentValue.trim().length > 0) {
             componentFieldsFromDataSources.push(
               mapField(
-                `${componentName}.AllFields`, // New fieldName: ComponentName.AllFields
-                aggregatedComponentValue.trim(), // Aggregated fieldValue
-                item.id // componentId (parent page's ID)
+                `${componentName}.AllFields`,
+                aggregatedComponentValue.trim(),
+                item.id,
+                `${componentName}.AllFields.${item.id}.${dsDetail.dsId}.${dsDetail.renderingUid}` // Optional: include rendering UID if available
               )
             );
           }
         }
       } catch (dsError: any) {
-        console.error(`Error scraping data source ${dsId}:`, dsError.message);
+        console.error(`Error scraping data source ${dsDetail.dsId}:`, dsError.message);
       }
     }
 
-    // Determine the URL for the current item. Use item.url directly.
     const itemUrl = item.url || "";
 
-    // If the current item is a primary content page, index it immediately
     if (itemType === "page") {
       const pageToProcess: Page = {
         pageId: item.id,
         pagePath: item.path,
         pageTitle: item.displayName || item.name,
         language: language,
-        fields: [...currentItemFields, ...componentFieldsFromDataSources], // Combine page's own fields with component fields
-        components: [], // This array is now always empty
+        fields: [...currentItemFields, ...componentFieldsFromDataSources],
+        components: [],
         itemType: itemType,
-        url: itemUrl, // Include the URL here
+        url: itemUrl,
       };
       await processAndIndexContent({
         pages: [pageToProcess],
@@ -305,18 +320,16 @@ export async function scrape(
       });
       console.log(`Indexed page: ${pageToProcess.pagePath}`);
     } else {
-      // If it's a component data source item itself (not a primary page),
-      // and it has no parentPageId (meaning it's a top-level component being scraped directly), index it.
       if (!parentPageId) {
         const componentToProcess: Page = {
           pageId: item.id,
           pagePath: item.path,
           pageTitle: item.displayName || item.name,
           language: language,
-          fields: currentItemFields, // Only its own fields
+          fields: currentItemFields,
           components: [],
           itemType: itemType,
-          url: itemUrl, // Include the URL here
+          url: itemUrl,
         };
         await processAndIndexContent({
           pages: [componentToProcess],
@@ -326,12 +339,8 @@ export async function scrape(
       }
     }
 
-    // Recursively scrape children pages
     if (item.hasChildren && item.children && item.children.length > 0) {
       for (const child of item.children) {
-        // Recursively scrape children. The indexing will happen inside the recursive call
-        // if the child is a primary content page.
-        // The parentPageId for children is the current item's ID if it's a page.
         await scrape(
           graphqlEndpoint,
           apiKey,
@@ -343,8 +352,6 @@ export async function scrape(
         );
       }
     }
-
-    // No return value needed as indexing is done incrementally
   } catch (error: any) {
     console.error(`Error scraping ${currentPath}:`, error.message);
     throw error;
