@@ -203,14 +203,14 @@ export async function scrape(
     );
 
     const currentItemFields = item.ownFields
-    .filter(field => field.value && field.__typename === "TextField")
-    .map((field) =>
-      mapField(
-        "PageField." + field.name, // fieldname
-        field.value, // fieldvalue
-        parentPageId ? item.id : undefined // componentId
-      )
-    );
+      .filter(field => field.value && field.__typename === "TextField")
+      .map((field) =>
+        mapField(
+          "PageField." + field.name, // fieldname
+          field.value, // fieldvalue
+          parentPageId ? item.id : undefined // componentId
+        )
+      );
 
     const dataSourceIds: string[] = [];
 
@@ -240,18 +240,25 @@ export async function scrape(
 
         const dsItem = dsResponse?.item;
         if (dsItem) {
-          const componentName = "{" + dsItem.path + "}"; // Use pageTitle as component name, fallback to ID
+          const componentName = dsItem.displayName || dsItem.name || dsItem.id; // Use display name, then name, then ID
+          let aggregatedComponentValue = "";
+
+          // Aggregate all text field values from the component
           dsItem.ownFields
-          .filter(field => field.value && field.__typename === "TextField")
-          .forEach((field) => {
+            .filter(field => field.value && field.__typename === "TextField")
+            .forEach((field) => {
+              aggregatedComponentValue += `${field.value} `; // Concatenate values with a space
+            });
+
+          if (aggregatedComponentValue.trim().length > 0) {
             componentFieldsFromDataSources.push(
               mapField(
-                `${componentName}.${field.name}`, // fieldname
-                field.value, // fieldvalue
-                item.id // componentId
+                `${componentName}.AllFields`, // New fieldName: ComponentName.AllFields
+                aggregatedComponentValue.trim(), // Aggregated fieldValue
+                item.id // componentId (parent page's ID)
               )
             );
-          });
+          }
         }
       } catch (dsError: any) {
         console.error(`Error scraping data source ${dsId}:`, dsError.message);
