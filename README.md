@@ -1,7 +1,7 @@
 # Project-Sitecore-Mate
 
 > 🧑‍💻 Some days, AI is the teacher; other days, the eager student.\
-> 🤖 But these days, AI’s my mate.
+> 🤖 But these days, AI’s my mate. -Andi
 
 Welcome to **Project Sitecore Mate**!
 
