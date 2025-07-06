@@ -161,9 +161,10 @@ The app runs at [http://localhost:3000](http://localhost:3000).
 
 ---
 
-## 🤝 Contribution
+## 🤝 ToDo
 
-Contributions welcome—feel free to open issues or PRs!
+- Authentication
+- Scrapping - media , multiplist , GraphqL component output
 
 ## 📜 License
 
