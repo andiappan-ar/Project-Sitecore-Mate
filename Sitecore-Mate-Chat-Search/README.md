@@ -24,7 +24,8 @@ It features a **Next.js** frontend for environment management and search, and a 
 
 The solution is split into two main components:
 
-![Sitecore-Mate-Chat-Search](https://github.com/user-attachments/assets/d62210b3-6b94-49d1-adb1-c0c7ec7dfbb9)
+
+![Sitecore-Mate-Chat-Search](https://github.com/user-attachments/assets/adffa7df-337b-4dcb-9a5b-ea4b631ea231)
 
 
 
