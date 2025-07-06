@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sitecore RAG Chat Popup</title>
+    <style>
+        /* Basic Reset & Body Styling */
+        body {
+            margin: 0;
+            font-family: 'Inter', sans-serif;
+            box-sizing: border-box;
+        }
+
+        /* Chat Toggle Button */
+        #chat-toggle-button {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: #007bff; /* Blue */
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            font-size: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+            z-index: 1000;
+            transition: background-color 0.3s ease, transform 0.3s ease;
+        }
+
+            #chat-toggle-button:hover {
+                background-color: #0056b3; /* Darker blue */
+                transform: scale(1.05);
+            }
+
+        /* Chat Popup Container */
+        #chat-popup-container {
+            position: fixed;
+            bottom: 90px; /* Above the toggle button */
+            right: 20px;
+            width: 350px;
+            height: 500px;
+            background-color: #f8f9fa; /* Light grey */
+            border-radius: 15px;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            z-index: 999;
+            transition: transform 0.3s ease-out, opacity 0.3s ease-out;
+            transform: translateY(20px) scale(0.95);
+            opacity: 0;
+            visibility: hidden;
+        }
+
+            #chat-popup-container.open {
+                transform: translateY(0) scale(1);
+                opacity: 1;
+                visibility: visible;
+            }
+
+        /* Responsive adjustments for smaller screens */
+        @media (max-width: 600px) {
+            #chat-popup-container {
+                width: 90%;
+                height: 80%;
+                bottom: 10px;
+                right: 5%;
+                left: 5%;
+                max-height: calc(100% - 80px); /* Adjust max height for mobile */
+            }
+
+            #chat-toggle-button {
+                bottom: 10px;
+                right: 10px;
+                width: 50px;
+                height: 50px;
+                font-size: 20px;
+            }
+        }
+
+        /* Chat Header */
+        .chat-header {
+            background-color: #343a40; /* Dark grey */
+            color: white;
+            padding: 15px;
+            text-align: center;
+            font-size: 18px;
+            font-weight: bold;
+            border-top-left-radius: 15px;
+            border-top-right-radius: 15px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Chat Messages Area */
+        .chat-messages {
+            flex-grow: 1;
+            padding: 15px;
+            overflow-y: auto;
+            background-color: #e9ecef; /* Lighter grey */
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            scroll-behavior: smooth;
+        }
+
+        /* Message Bubble - Base */
+        .message-bubble {
+            max-width: 80%;
+            padding: 10px 15px;
+            border-radius: 20px;
+            word-wrap: break-word;
+            font-size: 14px;
+            line-height: 1.4;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+        }
+
+            /* User Message Bubble */
+            .message-bubble.user {
+                background-color: #007bff; /* Blue */
+                color: white;
+                align-self: flex-end;
+                border-bottom-right-radius: 5px; /* Sharper corner for user */
+            }
+
+            /* AI Message Bubble */
+            .message-bubble.ai {
+                background-color: #ffffff; /* White */
+                color: #343a40; /* Dark grey */
+                align-self: flex-start;
+                border-bottom-left-radius: 5px; /* Sharper corner for AI */
+            }
+
+                .message-bubble.ai .sources {
+                    font-size: 12px;
+                    margin-top: 8px;
+                    color: #6c757d; /* Muted grey for sources */
+                }
+
+                    .message-bubble.ai .sources a {
+                        color: #0056b3; /* Darker blue for links */
+                        text-decoration: none;
+                        display: block; /* Each source on new line */
+                        margin-top: 3px;
+                    }
+
+                        .message-bubble.ai .sources a:hover {
+                            text-decoration: underline;
+                        }
+
+        /* Loading Indicator */
+        .loading-indicator {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 10px;
+            font-size: 14px;
+            color: #6c757d;
+        }
+
+            .loading-indicator::after {
+                content: '';
+                display: inline-block;
+                width: 15px;
+                height: 15px;
+                border: 2px solid #ccc;
+                border-top-color: #007bff;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+                margin-left: 8px;
+            }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Chat Input Area */
+        .chat-input-area {
+            display: flex;
+            padding: 15px;
+            border-top: 1px solid #dee2e6; /* Light border */
+            background-color: #f8f9fa;
+            border-bottom-left-radius: 15px;
+            border-bottom-right-radius: 15px;
+        }
+
+            .chat-input-area input {
+                flex-grow: 1;
+                padding: 10px 15px;
+                border: 1px solid #ced4da; /* Light border */
+                border-radius: 20px;
+                font-size: 14px;
+                outline: none;
+                transition: border-color 0.3s ease;
+            }
+
+                .chat-input-area input:focus {
+                    border-color: #007bff; /* Blue on focus */
+                }
+
+            .chat-input-area button {
+                background-color: #28a745; /* Green */
+                color: white;
+                border: none;
+                border-radius: 20px;
+                padding: 10px 15px;
+                margin-left: 10px;
+                cursor: pointer;
+                font-size: 14px;
+                transition: background-color 0.3s ease, transform 0.2s ease;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+                .chat-input-area button:hover {
+                    background-color: #218838; /* Darker green */
+                    transform: translateY(-1px);
+                }
+
+                .chat-input-area button:disabled {
+                    background-color: #6c757d; /* Grey when disabled */
+                    cursor: not-allowed;
+                }
+    </style>
+</head>
+<body>
+
+    <!-- Chat Toggle Button -->
+    <button id="chat-toggle-button">💬</button>
+
+    <!-- Chat Popup Container -->
+    <div id="chat-popup-container">
+        <div class="chat-header">Sitecore RAG Chat</div>
+        <div class="chat-messages" id="chat-messages">
+            <!-- Messages will be appended here -->
+            <div class="message-bubble ai">
+                Hello! How can I help you with Sitecore content today?
+            </div>
+        </div>
+        <div class="chat-input-area">
+            <input type="text" id="chat-input" placeholder="Type your message...">
+            <button id="send-button">Send</button>
+        </div>
+    </div>
+
+    <script>
+        // --- Configuration ---
+        // IMPORTANT: Replace with your actual FastAPI backend base URL (e.g., http://localhost:8001 or your deployed URL)
+        const CHAT_BACKEND_BASE_URL = 'http://localhost:8001';
+        // IMPORTANT: MANUALLY REPLACE THIS with the actual ID of the Sitecore environment
+        // you want to query. This ID should match an environment configured in your
+        // Sitecore-Content-Scrapper-Website/environments.json file and for which
+        // you have indexed content.
+        // Example: 'my-sitecore-env' or 'production-website'
+        const SITECORE_ENVIRONMENT_ID = 'dev-master'; // <--- REPLACE THIS LINE
+
+        // --- DOM Elements ---
+        const chatToggleButton = document.getElementById('chat-toggle-button');
+        const chatPopupContainer = document.getElementById('chat-popup-container');
+        const chatMessages = document.getElementById('chat-messages');
+        const chatInput = document.getElementById('chat-input');
+        const sendButton = document.getElementById('send-button');
+
+        // --- State ---
+        let isChatOpen = false;
+        let isGeneratingResponse = false;
+
+        // --- Utility Functions ---
+
+        /**
+         * Appends a message bubble to the chat messages area.
+         * @param {string} text - The message text.
+         * @param {'user' | 'ai'} sender - The sender of the message ('user' or 'ai').
+         * @param {Array<Object>} [sources=[]] - Optional array of source objects (e.g., {title: string, path: string, url: string}) for AI messages.
+         */
+        function appendMessage(text, sender, sources = []) {
+            const messageBubble = document.createElement('div');
+            messageBubble.classList.add('message-bubble', sender);
+            messageBubble.innerHTML = text.replace(/\n/g, '<br>'); // Preserve newlines
+
+            if (sender === 'ai' && sources.length > 0) {
+                const sourcesDiv = document.createElement('div');
+                sourcesDiv.classList.add('sources');
+                sourcesDiv.innerHTML = '<strong>Sources:</strong><br>' + sources.map(source => {
+                    // Use source.title if available, otherwise fallback to source.url or source.path
+                    const displayTitle = source.title || source.url || source.path || 'Unknown Source';
+                    // Ensure source.url is a valid string before using it in href
+                    const url = source.url && typeof source.url === 'string' ? source.url : '#';
+                    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${displayTitle}</a>`;
+                }).join('');
+                messageBubble.appendChild(sourcesDiv);
+            }
+
+            chatMessages.appendChild(messageBubble);
+            // Scroll to the bottom
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        /**
+         * Shows a loading indicator in the chat.
+         */
+        function showLoadingIndicator() {
+            const loadingDiv = document.createElement('div');
+            loadingDiv.classList.add('loading-indicator');
+            loadingDiv.id = 'loading-indicator';
+            loadingDiv.textContent = 'Thinking...';
+            chatMessages.appendChild(loadingDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        /**
+         * Hides the loading indicator from the chat.
+         */
+        function hideLoadingIndicator() {
+            const loadingDiv = document.getElementById('loading-indicator');
+            if (loadingDiv) {
+                loadingDiv.remove();
+            }
+        }
+
+        /**
+         * Handles sending a message to the backend for RAG.
+         */
+        async function sendMessage() {
+            const userQuery = chatInput.value.trim();
+            if (!userQuery || isGeneratingResponse) {
+                return;
+            }
+
+            appendMessage(userQuery, 'user');
+            chatInput.value = ''; // Clear input
+            isGeneratingResponse = true;
+            sendButton.disabled = true;
+            showLoadingIndicator();
+
+            try {
+                // Ensure CHAT_BACKEND_BASE_URL is correctly set
+                if (!CHAT_BACKEND_BASE_URL) {
+                    throw new Error("CHAT_BACKEND_BASE_URL is not configured.");
+                }
+                // Ensure SITECORE_ENVIRONMENT_ID is correctly set and not a placeholder
+                if (SITECORE_ENVIRONMENT_ID === 'your-sitecore-environment-id' || !SITECORE_ENVIRONMENT_ID) {
+                    throw new Error("SITECORE_ENVIRONMENT_ID is not configured. Please update the HTML snippet.");
+                }
+
+                const response = await fetch(`${CHAT_BACKEND_BASE_URL}/generate-answer`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: userQuery,
+                        environment: SITECORE_ENVIRONMENT_ID, // Pass the environment ID
+                    }),
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.message || 'Failed to generate answer');
+                }
+
+                const data = await response.json();
+                const aiAnswer = data.answer || 'No answer generated.';
+                const sources = data.sources || [];
+
+                appendMessage(aiAnswer, 'ai', sources);
+
+            } catch (error) {
+                console.error('Error generating answer:', error);
+                appendMessage(`Sorry, I couldn't get an answer. Please try again. (${error.message})`, 'ai');
+            } finally {
+                isGeneratingResponse = false;
+                sendButton.disabled = false;
+                hideLoadingIndicator();
+            }
+        }
+
+        // --- Event Listeners ---
+
+        chatToggleButton.addEventListener('click', () => {
+            isChatOpen = !isChatOpen;
+            if (isChatOpen) {
+                chatPopupContainer.classList.add('open');
+            } else {
+                chatPopupContainer.classList.remove('open');
+            }
+        });
+
+        sendButton.addEventListener('click', sendMessage);
+
+        chatInput.addEventListener('keypress', (event) => {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // Initial state: ensure popup is closed on load
+        chatPopupContainer.classList.remove('open');
+    </script>
+</body>
+</html>

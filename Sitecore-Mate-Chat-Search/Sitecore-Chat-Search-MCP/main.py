@@ -16,6 +16,7 @@ import asyncio
 from fastapi.responses import StreamingResponse
 from collections import defaultdict # Import defaultdict
 from contextlib import asynccontextmanager # For FastAPI lifespan management
+from fastapi.middleware.cors import CORSMiddleware # ADDED: Import CORSMiddleware
 
 # Import prompts
 from prompts import RAG_PROMPT_TEMPLATE, PAGE_SUMMARY_PROMPT_TEMPLATE, COMPONENT_SUMMARY_PROMPT_TEMPLATE
@@ -84,6 +85,22 @@ async def lifespan(app: FastAPI):
     print("Application shutdown.")
 
 app = FastAPI(lifespan=lifespan)
+
+# ADDED: CORS Configuration - Now loaded from environment variable
+# IMPORTANT: Set CORS_ALLOWED_ORIGINS in your .env file.
+# Example: CORS_ALLOWED_ORIGINS="http://localhost:3000,https://your-website.com"
+# Use "*" for all origins (NOT recommended for production).
+cors_origins_str = os.getenv("CORS_ALLOWED_ORIGINS")
+origins = [origin.strip() for origin in cors_origins_str.split(',') if origin.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # --- Helper Functions for Chunking & Indexing ---
 
@@ -464,7 +481,7 @@ async def advanced_rag_indexing(payload: ContentPayload, collection, text_splitt
             if virtual_component_had_fields_summarized:
                 actual_rendering_uid_for_id_tracking = grouping_render_uid_tracking if grouping_render_uid_tracking != "NO_RENDER_UID" else ''
                 virtual_comp_instance_key_for_field_check_temp = f"{comp_name_prefix_tracking}{'_' + actual_rendering_uid_for_id_tracking if actual_rendering_uid_for_id_tracking else ''}"
-                virtual_comp_instance_id_tracking = hashlib.sha256(f"{page.pageId}-{virtual_comp_instance_key_for_field_check_temp}".encode('utf-8')).hexdigest()[:16]
+                potential_virtual_comp_instance_id_for_field = hashlib.sha256(f"{page.pageId}-{virtual_comp_instance_key_for_field_check_temp}".encode('utf-8')).hexdigest()[:16]
 
                 for f_track in fields_list_tracking:
                     if f_track.fieldValue and f_track.fieldName not in ["__Renderings", "__Final Renderings"]:
@@ -817,3 +834,4 @@ async def generate_answer(payload: QueryPayload):
     except Exception as e:
         print(f"Error generating answer: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
