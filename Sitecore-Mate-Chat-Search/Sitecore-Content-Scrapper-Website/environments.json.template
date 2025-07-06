@@ -7,5 +7,14 @@
     "root_path": "/sitecore/content/demo-mate-d-jss-xp/home",
     "language": "en",
     "status": "Ready"
+  },
+  {
+    "id": 2,
+    "name": "dev",
+    "graphql_endpoint": "https://sc104sc.dev/sitecore/api/graph/items/master",
+    "api_key": "{3D9DCC58-0C6F-4749-A5B1-B965D2725F74}",
+    "root_path": "/sitecore/content/demo-mate-d-jss-xp/home",
+    "language": "en",
+    "status": "Ready"
   }
 ]

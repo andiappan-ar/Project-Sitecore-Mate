@@ -159,7 +159,7 @@ const QueryPage = () => {
           id: source.path, // Using path as ID for simplicity
           name: source.title,
           path: source.path,
-          url: source.path, // Assuming path is also the URL for now
+          url: source.url, // Assuming path is also the URL for now
           language: '', // Language might not be in source, leave empty or fetch
         }
       })));

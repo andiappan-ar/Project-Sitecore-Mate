@@ -11,18 +11,20 @@ from sentence_transformers import SentenceTransformer
 import chromadb
 from bs4 import BeautifulSoup
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-import google.generativeai as genai
 from dotenv import load_dotenv
 import asyncio
 from fastapi.responses import StreamingResponse
 from collections import defaultdict # Import defaultdict
+from contextlib import asynccontextmanager # For FastAPI lifespan management
 
 # Import prompts
 from prompts import RAG_PROMPT_TEMPLATE, PAGE_SUMMARY_PROMPT_TEMPLATE, COMPONENT_SUMMARY_PROMPT_TEMPLATE
 
+# Import LLM configuration functions
+from llm_config import get_llm_model, _initialize_llm_client
+
 # --- Configuration ---
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # New: Load chunking and query parameters from environment variables
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 1000))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 100))
@@ -30,10 +32,9 @@ N_RESULTS = int(os.getenv("N_RESULTS", 8))
 ADVANCED_RAG_ENABLED = os.getenv("ADVANCED_RAG_ENABLED", "false").lower() == "true"
 print(f"DEBUG: ADVANCED_RAG_ENABLED is set to: {ADVANCED_RAG_ENABLED}") # DEBUG line
 
-if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY environment variable not set or .env file is missing.")
-genai.configure(api_key=GEMINI_API_KEY)
-print("Gemini API configured successfully.")
+# LLM configuration and validation is now handled by llm_config.py on import.
+print("LLM configured via llm_config.py.")
+
 
 # --- Models ---
 model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -73,7 +74,16 @@ class QueryPayload(BaseModel):
     environment: str
 
 # --- FastAPI App Initialization ---
-app = FastAPI()
+
+# Use asynccontextmanager for FastAPI lifespan to initialize LLM client
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("Application startup: Initializing LLM client...")
+    await _initialize_llm_client() # Ensure LLM client is initialized at startup
+    yield
+    print("Application shutdown.")
+
+app = FastAPI(lifespan=lifespan)
 
 # --- Helper Functions for Chunking & Indexing ---
 
@@ -102,7 +112,7 @@ def sanitize_chroma_db_name(name: str) -> str:
 def get_effective_rendering_uid(field: Field) -> Optional[str]:
     """
     Determines the most appropriate rendering UID for a field.
-    Prioritizes the field's 'renderinguid' property.
+    Prioritizes the field's 'renderingUid' property.
     If not available, attempts to extract it from 'fieldName' if it matches the expected format:
     'componentName.AllFields.itemId.dsId.renderingUid'.
     """
@@ -117,9 +127,6 @@ def get_effective_rendering_uid(field: Field) -> Optional[str]:
         # Basic check if it looks like a GUID (common for Sitecore rendering UIDs)
         if re.match(r'^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$', potential_rendering_uid):
             return potential_rendering_uid
-        # If it's not a GUID but you still want to use it as a UID from fieldName, return it.
-        # This makes it more flexible if renderingUids are not strictly GUIDs.
-        # return potential_rendering_uid # Uncomment this if renderingUids are not always GUIDs
         
     return None
 
@@ -165,16 +172,48 @@ def build_component_summary_prompt(component_name: str, component_fields: dict) 
 async def enhance_text_with_llm(prompt: str, log_label: str) -> str:
     """
     Uses an LLM to enhance/summarize text based on the provided prompt.
+    Dynamically calls the appropriate LLM client based on llm_config.
     """
     try:
-        llm = genai.GenerativeModel('gemini-2.0-flash-lite')
-        response = await llm.generate_content_async(prompt)
+        llm_client, current_llm_provider = await get_llm_model("summary")
+        response_text = ""
+
+        if current_llm_provider == "gemini":
+            response = await llm_client.generate_content_async(prompt)
+            response_text = response.text
+        elif current_llm_provider == "openai":
+            # Assuming llm_client is the OpenAI() client object
+            model_name = os.getenv("OPENAI_DEFAULT_MODEL_SUMMARY") # Get model name again for clarity
+            if not model_name:
+                raise ValueError("OPENAI_DEFAULT_MODEL_SUMMARY environment variable not set for OpenAI provider.")
+            chat_completion = await llm_client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0
+            )
+            response_text = chat_completion.choices[0].message.content
+        elif current_llm_provider == "ollama":
+            # Assuming llm_client is the ollama.Client() object
+            model_name = os.getenv("OLLAMA_DEFAULT_MODEL_SUMMARY") # Get model name again for clarity
+            if not model_name:
+                raise ValueError("OLLAMA_DEFAULT_MODEL_SUMMARY environment variable not set for Ollama provider.")
+            chat_completion = await asyncio.to_thread(
+                llm_client.chat,
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.0}
+            )
+            response_text = chat_completion['message']['content']
+        else:
+            raise ValueError(f"Unsupported LLM provider: {current_llm_provider}")
+
         await log_queue.put(f"    (LLM enhanced {log_label}.)")
-        return response.text
+        return response_text
     except Exception as e:
         await log_queue.put(f"    (Error enhancing {log_label} with LLM: {e}. Using original text or skipping.)")
         print(f"Error enhancing {log_label} with LLM: {e}")
         return "" # Return empty string if LLM fails, leading to skipping this enhanced text
+
 
 async def advanced_rag_indexing(payload: ContentPayload, collection, text_splitter):
     """
@@ -424,8 +463,8 @@ async def advanced_rag_indexing(payload: ContentPayload, collection, text_splitt
 
             if virtual_component_had_fields_summarized:
                 actual_rendering_uid_for_id_tracking = grouping_render_uid_tracking if grouping_render_uid_tracking != "NO_RENDER_UID" else ''
-                virtual_comp_instance_key_tracking = f"{comp_name_prefix_tracking}{'_' + actual_rendering_uid_for_id_tracking if actual_rendering_uid_for_id_tracking else ''}"
-                virtual_comp_instance_id_tracking = hashlib.sha256(f"{page.pageId}-{virtual_comp_instance_key_tracking}".encode('utf-8')).hexdigest()[:16]
+                virtual_comp_instance_key_for_field_check_temp = f"{comp_name_prefix_tracking}{'_' + actual_rendering_uid_for_id_tracking if actual_rendering_uid_for_id_tracking else ''}"
+                virtual_comp_instance_id_tracking = hashlib.sha256(f"{page.pageId}-{virtual_comp_instance_key_for_field_check_temp}".encode('utf-8')).hexdigest()[:16]
 
                 for f_track in fields_list_tracking:
                     if f_track.fieldValue and f_track.fieldName not in ["__Renderings", "__Final Renderings"]:
@@ -708,6 +747,7 @@ def query_content(payload: QueryPayload):
 async def generate_answer(payload: QueryPayload):
     """
     Generates a conversational answer using a RAG (Retrieval-Augmented Generation) approach.
+    Dynamically calls the appropriate LLM client based on llm_config.
     """
     try:
         # Sanitize the environment name for ChromaDB
@@ -728,8 +768,37 @@ async def generate_answer(payload: QueryPayload):
         # Use the imported prompt template
         prompt = RAG_PROMPT_TEMPLATE.format(context=context, query=payload.query)
 
-        llm = genai.GenerativeModel('gemini-2.0-flash')
-        response = await llm.generate_content_async(prompt)
+        llm_client, current_llm_provider = await get_llm_model("general")
+        response_text = ""
+
+        if current_llm_provider == "gemini":
+            response = await llm_client.generate_content_async(prompt)
+            response_text = response.text
+        elif current_llm_provider == "openai":
+            # Assuming llm_client is the OpenAI() client object
+            model_name = os.getenv("OPENAI_DEFAULT_MODEL_GENERAL") # Get model name again for clarity
+            if not model_name:
+                raise ValueError("OPENAI_DEFAULT_MODEL_GENERAL environment variable not set for OpenAI provider.")
+            chat_completion = await llm_client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0
+            )
+            response_text = chat_completion.choices[0].message.content
+        elif current_llm_provider == "ollama":
+            # Assuming llm_client is the ollama.Client() object
+            model_name = os.getenv("OLLAMA_DEFAULT_MODEL_GENERAL") # Get model name again for clarity
+            if not model_name:
+                raise ValueError("OLLAMA_DEFAULT_MODEL_GENERAL environment variable not set for Ollama provider.")
+            chat_completion = await asyncio.to_thread(
+                llm_client.chat,
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.0}
+            )
+            response_text = chat_completion['message']['content']
+        else:
+            raise ValueError(f"Unsupported LLM provider: {current_llm_provider}")
         
         sources = []
         if context_results.get('metadatas'):
@@ -743,7 +812,7 @@ async def generate_answer(payload: QueryPayload):
                     })
                     seen_urls.add(meta['page_url'])
 
-        return {"answer": response.text, "sources": sources}
+        return {"answer": response_text, "sources": sources}
 
     except Exception as e:
         print(f"Error generating answer: {e}")
