@@ -17,7 +17,7 @@ Browse the folders to explore current work-in-progress and upcoming tools!
 ### 🚀 BETA Release: Sitecore-Mate-Chat-Search
 *A chatbot search assistant who understands Sitecore website content (with tools to scrape and learn your Sitecore instance).*
 
-### 🛠️ WIP: Sitecore-Mate-Dev
+### 🛠️ POC-WIP: Sitecore-Mate-Dev
 *A developer assistant to help with coding, deployments, and even creation of Sitecore items and templates.*
 
 ### 📋 In Plan: Sitecore-Mate-CMS
