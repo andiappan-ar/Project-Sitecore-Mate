@@ -104,7 +104,7 @@ export default function Home() {
       setEnvironments(updatedEnvironments);
       setNewEnvName('');
       // Keep the form fields populated with env values after adding
-      // setNewEnvGraphQLEndpoint(''); 
+      // setNewEnvGraphQLEndpoint('');
       // setNewEnvApiKey('');
       // setNewEnvRootPath('/sitecore/content/demo-mate-d-jss-xp/home');
       // setNewEnvLanguage('en');
@@ -173,184 +173,185 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 p-8 font-sans">
-      <div className="max-w-7xl mx-auto bg-white p-6 rounded-lg shadow-lg">
-        <h1 className="text-3xl font-bold text-gray-800 mb-6 text-center">Sitecore Content Scraper & Indexer</h1>
+   
+      <div className="min-h-screen bg-neutral-50 p-8 font-sans"> {/* Changed to light gray background */}
+        <div className="max-w-7xl mx-auto bg-white p-6 rounded-lg shadow-lg"> {/* Main container, keeping white */}
+          <h1 className="text-3xl font-bold text-gray-800 mb-6 text-center">Sitecore Content Scraper & Indexer</h1> {/* Changed to darker gray */}
 
-        {/* Link to Query Page */}
-        <div className="text-center mb-6">
-            <Link href="/query" className="text-blue-600 hover:underline text-lg font-medium">
-                Go to AI Content Search &rarr;
+          {/* Link to Query Page */}
+          <div className="text-center mb-6">
+            <Link href="/query" className="text-gray-700 hover:underline hover:text-gray-900 text-lg font-medium"> {/* Changed link color */}
+              Go to AI Content Search &rarr;
             </Link>
-        </div>
-
-        {error && (
-          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
-            <strong className="font-bold">Error:</strong>
-            <span className="block sm:inline"> {error}</span>
           </div>
-        )}
-        {message && (
-          <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative mb-4" role="alert">
-            <strong className="font-bold">Success:</strong>
-            <span className="block sm:inline"> {message}</span>
-          </div>
-        )}
 
-        {/* Add New Environment Form */}
-        <div className="mb-8 p-6 border rounded-lg bg-gray-50">
-          <h2 className="text-2xl font-semibold text-gray-700 mb-4">Add New Sitecore Environment</h2>
-          <form onSubmit={handleAddEnvironment} className="space-y-4">
-            <div>
-              <label htmlFor="envName" className="block text-sm font-medium text-gray-700">Environment Name</label>
-              <input
-                type="text"
-                id="envName"
-                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                value={newEnvName}
-                onChange={(e) => setNewEnvName(e.target.value)}
-                required
-              />
+          {error && (
+            <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
+              <strong className="font-bold">Error:</strong>
+              <span className="block sm:inline"> {error}</span>
             </div>
-            <div>
-              <label htmlFor="graphqlEndpoint" className="block text-sm font-medium text-gray-700">GraphQL Endpoint</label>
-              <input
-                type="url"
-                id="graphqlEndpoint"
-                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                value={newEnvGraphQLEndpoint}
-                onChange={(e) => setNewEnvGraphQLEndpoint(e.target.value)}
-                placeholder="e.g., https://your-sitecore-instance/sitecore/api/graph/edge"
-                required
-              />
-            </div>
-            <div>
-              <label htmlFor="apiKey" className="block text-sm font-medium text-gray-700">API Key</label>
-              <input
-                type="text"
-                id="apiKey"
-                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                value={newEnvApiKey}
-                onChange={(e) => setNewEnvApiKey(e.target.value)}
-                required
-              />
-            </div>
-            <div>
-              <label htmlFor="rootPath" className="block text-sm font-medium text-gray-700">Root Path</label>
-              <input
-                type="text"
-                id="rootPath"
-                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                value={newEnvRootPath}
-                onChange={(e) => setNewEnvRootPath(e.target.value)}
-                placeholder="/sitecore/content/your-site/home"
-                required
-              />
-            </div>
-            <div>
-              <label htmlFor="language" className="block text-sm font-medium text-gray-700">Language</label>
-              <input
-                type="text"
-                id="language"
-                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                value={newEnvLanguage}
-                onChange={(e) => setNewEnvLanguage(e.target.value)}
-                placeholder="e.g., en"
-                required
-              />
-            </div>
-            <button
-              type="submit"
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-            >
-              Add Environment
-            </button>
-          </form>
-        </div>
-
-        {/* Existing Environments List */}
-        <div className="mb-8">
-          <h2 className="text-2xl font-semibold text-gray-700 mb-4">Existing Environments</h2>
-          {loading ? (
-            <p className="text-gray-600">Loading environments...</p>
-          ) : environments.length === 0 ? (
-            <p className="text-gray-600">No environments added yet. Add one above!</p>
-          ) : (
-            <ul className="space-y-4">
-              {environments.map((env) => (
-                <li
-                  key={env.id}
-                  className={`p-4 border rounded-lg flex justify-between items-center transition-all duration-200 ${
-                    selectedEnvironmentId === env.id ? 'bg-blue-50 border-blue-400 shadow-md' : 'bg-white border-gray-200'
-                  }`}
-                >
-                  <div>
-                    <h3 className="text-lg font-medium text-gray-900">{env.name}</h3>
-                    <p className="text-sm text-gray-600">URL: {env.graphql_endpoint}</p>
-                    <p className="text-sm text-gray-600">Root Path: {env.root_path}</p>
-                    <p className="text-sm text-gray-600">Language: {env.language}</p>
-                    <p className="text-sm text-gray-600">Status: {env.status}</p>
-                  </div>
-                  <div className="flex space-x-2">
-                    <button
-                      onClick={() => setSelectedEnvironmentId(env.id === selectedEnvironmentId ? null : env.id)}
-                      className={`px-3 py-1 rounded-md text-sm font-medium ${
-                        selectedEnvironmentId === env.id
-                          ? 'bg-blue-500 text-white hover:bg-blue-600'
-                          : 'bg-gray-200 text-gray-800 hover:bg-gray-300'
-                      }`}
-                    >
-                      {selectedEnvironmentId === env.id ? 'Selected' : 'Select'}
-                    </button>
-                    <button
-                      onClick={() => handleDeleteEnvironment(env.id)}
-                      className="px-3 py-1 bg-red-500 hover:bg-red-600 text-white rounded-md text-sm font-medium"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
           )}
-        </div>
-
-        {/* Actions for Selected Environment */}
-        {selectedEnvironmentId !== null && (
-          <div className="mb-8 p-6 border rounded-lg bg-blue-50">
-            <h2 className="text-2xl font-semibold text-blue-800 mb-4">Actions for Selected Environment</h2>
-            <p className="text-lg text-blue-700 mb-4">
-              Selected: <span className="font-bold">{environments.find(e => e.id === selectedEnvironmentId)?.name}</span>
-            </p>
-            <div className="flex space-x-4">
-              <button
-                onClick={handleScrapeContent}
-                disabled={isScraping}
-                className={`flex-1 py-3 px-6 rounded-md text-lg font-semibold shadow-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition-colors duration-200 ${
-                  isScraping ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 text-white'
-                }`}
-              >
-                {isScraping ? 'Scraping & Indexing...' : 'Scrape & Index Content'}
-              </button>
-              {/* You might add other actions here, e.g., "Update Index" */}
+          {message && (
+            <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative mb-4" role="alert">
+              <strong className="font-bold">Success:</strong>
+              <span className="block sm:inline"> {message}</span>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Real-time Log Window */}
-        <div className="mb-8 p-6 border rounded-lg bg-gray-800 text-gray-100 font-mono">
-          <h2 className="text-2xl font-semibold text-white mb-4">Real-time Scraping Logs</h2>
-          <div id="log-window" className="h-64 overflow-y-auto bg-gray-900 p-4 rounded-md text-sm">
-            {logMessages.length === 0 ? (
-              <p className="text-gray-500">Logs will appear here during scraping...</p>
+          {/* Add New Environment Form */}
+          <div className="mb-8 p-6 border border-gray-200 rounded-lg bg-white shadow-sm"> {/* Subtle shade of white with border */}
+            <h2 className="text-2xl font-semibold text-gray-700 mb-4">Add New Sitecore Environment</h2>
+            <form onSubmit={handleAddEnvironment} className="space-y-4">
+              <div>
+                <label htmlFor="envName" className="block text-sm font-medium text-gray-600">Environment Name</label>
+                <input
+                  type="text"
+                  id="envName"
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm text-gray-800"
+                  value={newEnvName}
+                  onChange={(e) => setNewEnvName(e.target.value)}
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor="graphqlEndpoint" className="block text-sm font-medium text-gray-600">GraphQL Endpoint</label>
+                <input
+                  type="url"
+                  id="graphqlEndpoint"
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm text-gray-800"
+                  value={newEnvGraphQLEndpoint}
+                  onChange={(e) => setNewEnvGraphQLEndpoint(e.target.value)}
+                  placeholder="e.g., https://your-sitecore-instance/sitecore/api/graph/edge"
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor="apiKey" className="block text-sm font-medium text-gray-600">API Key</label>
+                <input
+                  type="text"
+                  id="apiKey"
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm text-gray-800"
+                  value={newEnvApiKey}
+                  onChange={(e) => setNewEnvApiKey(e.target.value)}
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor="rootPath" className="block text-sm font-medium text-gray-600">Root Path</label>
+                <input
+                  type="text"
+                  id="rootPath"
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm text-gray-800"
+                  value={newEnvRootPath}
+                  onChange={(e) => setNewEnvRootPath(e.target.value)}
+                  placeholder="/sitecore/content/your-site/home"
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor="language" className="block text-sm font-medium text-gray-600">Language</label>
+                <input
+                  type="text"
+                  id="language"
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm text-gray-800"
+                  value={newEnvLanguage}
+                  onChange={(e) => setNewEnvLanguage(e.target.value)}
+                  placeholder="e.g., en"
+                  required
+                />
+              </div>
+              <button
+                type="submit"
+                className="w-full bg-gray-800 hover:bg-gray-900 text-white font-bold py-2 px-4 rounded-md shadow-md focus:outline-none focus:ring-2 focus:ring-gray-700 focus:ring-offset-2" /* Dark button */
+              >
+                Add Environment
+              </button>
+            </form>
+          </div>
+
+          {/* Existing Environments List */}
+          <div className="mb-8">
+            <h2 className="text-2xl font-semibold text-gray-700 mb-4">Existing Environments</h2>
+            {loading ? (
+              <p className="text-gray-600">Loading environments...</p>
+            ) : environments.length === 0 ? (
+              <p className="text-gray-600">No environments added yet. Add one above!</p>
             ) : (
-              logMessages.map((log, index) => (
-                <p key={index} className="mb-1 last:mb-0 break-words whitespace-pre-wrap">{log}</p>
-              ))
+              <ul className="space-y-4">
+                {environments.map((env) => (
+                  <li
+                    key={env.id}
+                    className={`p-4 border border-gray-200 rounded-lg flex justify-between items-center transition-all duration-200 ${selectedEnvironmentId === env.id ? 'bg-blue-50 shadow-md' : 'bg-white shadow-sm' /* Selected item still light blue */
+                      }`}
+                  >
+                    <div>
+                      <h3 className="text-lg font-medium text-gray-800">{env.name}</h3>
+                      <p className="text-sm text-gray-600">URL: {env.graphql_endpoint}</p>
+                      <p className="text-sm text-gray-600">Root Path: {env.root_path}</p>
+                      <p className="text-sm text-gray-600">Language: {env.language}</p>
+                      <p className="text-sm text-gray-600">Status: {env.status}</p>
+                    </div>
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => setSelectedEnvironmentId(env.id === selectedEnvironmentId ? null : env.id)}
+                        className={`px-3 py-1 rounded-md text-sm font-medium border border-gray-300 ${ /* Subtle button border */
+                          selectedEnvironmentId === env.id
+                            ? 'bg-blue-600 text-white hover:bg-blue-700' /* Selected state remains blue */
+                            : 'bg-gray-200 text-gray-700 hover:bg-gray-300' /* Unselected button light gray */
+                          }`}
+                      >
+                        {selectedEnvironmentId === env.id ? 'Selected' : 'Select'}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteEnvironment(env.id)}
+                        className="px-3 py-1 bg-red-500 hover:bg-red-600 text-white rounded-md text-sm font-medium" /* Delete button remains red */
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
             )}
+          </div>
+
+          {/* Actions for Selected Environment */}
+          {selectedEnvironmentId !== null && (
+            <div className="mb-8 p-6 border border-gray-200 rounded-lg bg-white shadow-sm"> {/* Changed to white with border */}
+              <h2 className="text-2xl font-semibold text-gray-700 mb-4">Actions for Selected Environment</h2>
+              <p className="text-lg text-gray-700 mb-4">
+                Selected: <span className="font-bold text-blue-700">{environments.find(e => e.id === selectedEnvironmentId)?.name}</span>
+              </p>
+              <div className="flex space-x-4">
+                <button
+                  onClick={handleScrapeContent}
+                  disabled={isScraping}
+                  className={`flex-1 py-3 px-6 rounded-md text-lg font-semibold shadow-md focus:outline-none focus:ring-2 focus:ring-gray-700 focus:ring-offset-2 transition-colors duration-200 ${ /* Dark button */
+                    isScraping ? 'bg-gray-400 cursor-not-allowed' : 'bg-gray-800 hover:bg-gray-900 text-white'
+                    }`}
+                >
+                  {isScraping ? 'Scraping & Indexing...' : 'Scrape & Index Content'}
+                </button>
+                {/* You might add other actions here, e.g., "Update Index" */}
+              </div>
+            </div>
+          )}
+
+          {/* Real-time Log Window */}
+          <div className="mb-8 p-6 border border-gray-200 rounded-lg bg-white text-gray-800 font-mono shadow-sm"> {/* White background, border, shadow */}
+            <h2 className="text-2xl font-semibold text-gray-700 mb-4">Real-time Scraping Logs</h2>
+            <div id="log-window" className="h-64 overflow-y-auto bg-gray-100 p-4 rounded-md text-sm border border-gray-200"> {/* Lighter background for inner log, subtle border */}
+              {logMessages.length === 0 ? (
+                <p className="text-gray-600">Logs will appear here during scraping...</p>
+              ) : (
+                logMessages.map((log, index) => (
+                  <p key={index} className="mb-1 last:mb-0 break-words whitespace-pre-wrap text-gray-700">{log}</p>
+                ))
+              )}
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    
   );
 }
