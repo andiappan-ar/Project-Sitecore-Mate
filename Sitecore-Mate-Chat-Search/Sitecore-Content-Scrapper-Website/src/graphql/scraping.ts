@@ -202,15 +202,30 @@ export async function scrape(
       }): ${itemType}`
     );
 
-    const currentItemFields = item.ownFields
+    // --- Start of changes for currentItemFields ---
+    let aggregatedPageValue = "";
+    const seenPageFieldValues = new Set<string>();
+
+    item.ownFields
       .filter(field => field.value && field.__typename === "TextField")
-      .map((field) =>
+      .forEach((field) => {
+        if (!seenPageFieldValues.has(field.value)) {
+          aggregatedPageValue += `${field.value} `; // Concatenate unique values with a space
+          seenPageFieldValues.add(field.value);
+        }
+      });
+
+    const currentItemFields: Field[] = [];
+    if (aggregatedPageValue.trim().length > 0) {
+      currentItemFields.push(
         mapField(
-          "PageField." + field.name, // fieldname
-          field.value, // fieldvalue
-          parentPageId ? item.id : undefined // componentId
+          "Page.AllFields", // New fieldName: Page.AllFields
+          aggregatedPageValue.trim(), // Aggregated and unique fieldValue
+          item.id // componentId (the page's own ID)
         )
       );
+    }
+    // --- End of changes for currentItemFields ---
 
     const dataSourceIds: string[] = [];
 
@@ -242,12 +257,16 @@ export async function scrape(
         if (dsItem) {
           const componentName = dsItem.displayName || dsItem.name || dsItem.id; // Use display name, then name, then ID
           let aggregatedComponentValue = "";
+          const seenComponentFieldValues = new Set<string>(); // New: Set to track seen component field values
 
-          // Aggregate all text field values from the component
+          // Aggregate all text field values from the component, avoiding duplicates
           dsItem.ownFields
             .filter(field => field.value && field.__typename === "TextField")
             .forEach((field) => {
-              aggregatedComponentValue += `${field.value} `; // Concatenate values with a space
+              if (!seenComponentFieldValues.has(field.value)) { // Check for duplicates
+                aggregatedComponentValue += `${field.value} `; // Concatenate unique values with a space
+                seenComponentFieldValues.add(field.value); // Add to seen set
+              }
             });
 
           if (aggregatedComponentValue.trim().length > 0) {
