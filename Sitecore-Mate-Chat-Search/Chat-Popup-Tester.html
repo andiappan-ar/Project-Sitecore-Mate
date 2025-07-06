@@ -10,14 +10,49 @@
             margin: 0;
             font-family: 'Inter', sans-serif;
             box-sizing: border-box;
+            /* UPDATED: Moving background pattern with new colors */
+            background: repeating-linear-gradient(
+                45deg,
+                #E0F2F7, /* Light blue-green */
+                #E0F2F7 10px,
+                #D4ECF0 10px, /* Slightly darker blue-green for the stripe */
+                #D4ECF0 20px
+            );
+            background-size: 40px 40px; /* Smaller, more subtle pattern */
+            animation: moveBackground 20s linear infinite; /* Animation for moving pattern */
         }
 
-        /* Chat Toggle Button */
+        /* Keyframes for background animation remain the same */
+        @keyframes moveBackground {
+            from {
+                background-position: 0 0;
+            }
+            to {
+                background-position: 40px 40px; /* Move by the size of the pattern */
+            }
+        }
+
+        /* UPDATED: Center text styling with new color */
+        .center-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 3.5em;
+            font-weight: 700;
+            color: #1A5276; /* Dark teal-blue */
+            text-shadow: 3px 3px 6px rgba(0, 0, 0, 0.25);
+            z-index: 1;
+            white-space: nowrap;
+            letter-spacing: 2px;
+        }
+
+        /* UPDATED: Chat Toggle Button with new colors */
         #chat-toggle-button {
             position: fixed;
             bottom: 20px;
             right: 20px;
-            background-color: #007bff; /* Blue */
+            background-color: #28B463; /* Emerald green */
             color: white;
             border: none;
             border-radius: 50%;
@@ -28,26 +63,26 @@
             align-items: center;
             justify-content: center;
             cursor: pointer;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.25);
             z-index: 1000;
             transition: background-color 0.3s ease, transform 0.3s ease;
         }
 
-            #chat-toggle-button:hover {
-                background-color: #0056b3; /* Darker blue */
-                transform: scale(1.05);
-            }
+        #chat-toggle-button:hover {
+            background-color: #229954; /* Darker emerald green */
+            transform: scale(1.05);
+        }
 
-        /* Chat Popup Container */
+        /* UPDATED: Chat Popup Container with new background */
         #chat-popup-container {
             position: fixed;
-            bottom: 90px; /* Above the toggle button */
+            bottom: 90px;
             right: 20px;
             width: 350px;
             height: 500px;
-            background-color: #f8f9fa; /* Light grey */
-            border-radius: 15px;
-            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+            background-color: #FFFFFF; /* Pure white */
+            border-radius: 18px;
+            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
             display: flex;
             flex-direction: column;
             overflow: hidden;
@@ -58,13 +93,13 @@
             visibility: hidden;
         }
 
-            #chat-popup-container.open {
-                transform: translateY(0) scale(1);
-                opacity: 1;
-                visibility: visible;
-            }
+        #chat-popup-container.open {
+            transform: translateY(0) scale(1);
+            opacity: 1;
+            visibility: visible;
+        }
 
-        /* Responsive adjustments for smaller screens */
+        /* Responsive adjustments for smaller screens remain the same */
         @media (max-width: 600px) {
             #chat-popup-container {
                 width: 90%;
@@ -72,9 +107,8 @@
                 bottom: 10px;
                 right: 5%;
                 left: 5%;
-                max-height: calc(100% - 80px); /* Adjust max height for mobile */
+                max-height: calc(100% - 80px);
             }
-
             #chat-toggle-button {
                 bottom: 10px;
                 right: 10px;
@@ -82,78 +116,85 @@
                 height: 50px;
                 font-size: 20px;
             }
+            .center-text {
+                font-size: 1.8em;
+                text-align: center;
+                padding: 0 10px;
+            }
         }
 
-        /* Chat Header */
+        /* UPDATED: Chat Header with new color */
         .chat-header {
-            background-color: #343a40; /* Dark grey */
+            background-color: #1A5276; /* Dark teal-blue */
             color: white;
             padding: 15px;
             text-align: center;
             font-size: 18px;
             font-weight: bold;
-            border-top-left-radius: 15px;
-            border-top-right-radius: 15px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            border-top-left-radius: 18px;
+            border-top-right-radius: 18px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
         }
 
-        /* Chat Messages Area */
+        /* UPDATED: Chat Messages Area with new background */
         .chat-messages {
             flex-grow: 1;
             padding: 15px;
             overflow-y: auto;
-            background-color: #e9ecef; /* Lighter grey */
+            background-color: #F4F8F9; /* Very light blue-grey */
             display: flex;
             flex-direction: column;
             gap: 10px;
             scroll-behavior: smooth;
         }
 
-        /* Message Bubble - Base */
+        /* Message Bubble - Base styling remains the same */
         .message-bubble {
             max-width: 80%;
             padding: 10px 15px;
-            border-radius: 20px;
+            border-radius: 22px;
             word-wrap: break-word;
             font-size: 14px;
             line-height: 1.4;
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
 
-            /* User Message Bubble */
-            .message-bubble.user {
-                background-color: #007bff; /* Blue */
-                color: white;
-                align-self: flex-end;
-                border-bottom-right-radius: 5px; /* Sharper corner for user */
-            }
+        /* UPDATED: User Message Bubble with new color */
+        .message-bubble.user {
+            background-color: #5DADE2; /* Sky blue */
+            color: white;
+            align-self: flex-end;
+            border-bottom-right-radius: 8px;
+        }
 
-            /* AI Message Bubble */
-            .message-bubble.ai {
-                background-color: #ffffff; /* White */
-                color: #343a40; /* Dark grey */
-                align-self: flex-start;
-                border-bottom-left-radius: 5px; /* Sharper corner for AI */
-            }
+        /* UPDATED: AI Message Bubble with new text color */
+        .message-bubble.ai {
+            background-color: #FFFFFF; /* White */
+            color: #34495E; /* Slightly lighter dark grey for AI text */
+            align-self: flex-start;
+            border-bottom-left-radius: 8px;
+        }
 
-                .message-bubble.ai .sources {
-                    font-size: 12px;
-                    margin-top: 8px;
-                    color: #6c757d; /* Muted grey for sources */
-                }
+        /* UPDATED: AI Message Sources with new color */
+        .message-bubble.ai .sources {
+            font-size: 12px;
+            margin-top: 8px;
+            color: #708090; /* Slate gray */
+        }
 
-                    .message-bubble.ai .sources a {
-                        color: #0056b3; /* Darker blue for links */
-                        text-decoration: none;
-                        display: block; /* Each source on new line */
-                        margin-top: 3px;
-                    }
+        /* UPDATED: AI Message Sources links with new color */
+        .message-bubble.ai .sources a {
+            color: #4A90E2; /* Muted blue */
+            text-decoration: none;
+            display: block;
+            margin-top: 3px;
+        }
 
-                        .message-bubble.ai .sources a:hover {
-                            text-decoration: underline;
-                        }
+        .message-bubble.ai .sources a:hover {
+            text-decoration: underline;
+        }
 
-        /* Loading Indicator */
+        /* Loading Indicator color updated */
         .loading-indicator {
             display: flex;
             justify-content: center;
@@ -163,75 +204,78 @@
             color: #6c757d;
         }
 
-            .loading-indicator::after {
-                content: '';
-                display: inline-block;
-                width: 15px;
-                height: 15px;
-                border: 2px solid #ccc;
-                border-top-color: #007bff;
-                border-radius: 50%;
-                animation: spin 1s linear infinite;
-                margin-left: 8px;
-            }
-
-        @keyframes spin {
-            to {
-                transform: rotate(360deg);
-            }
+        .loading-indicator::after {
+            content: '';
+            display: inline-block;
+            width: 15px;
+            height: 15px;
+            border: 2px solid #ccc;
+            border-top-color: #28B463; /* Match primary green */
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 8px;
         }
 
-        /* Chat Input Area */
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* UPDATED: Chat Input Area with new border and background */
         .chat-input-area {
             display: flex;
             padding: 15px;
-            border-top: 1px solid #dee2e6; /* Light border */
-            background-color: #f8f9fa;
-            border-bottom-left-radius: 15px;
-            border-bottom-right-radius: 15px;
+            border-top: 1px solid #E0E6EB; /* Light grey-blue border */
+            background-color: #FFFFFF; /* White */
+            border-bottom-left-radius: 18px;
+            border-bottom-right-radius: 18px;
         }
 
-            .chat-input-area input {
-                flex-grow: 1;
-                padding: 10px 15px;
-                border: 1px solid #ced4da; /* Light border */
-                border-radius: 20px;
-                font-size: 14px;
-                outline: none;
-                transition: border-color 0.3s ease;
-            }
+        /* UPDATED: Chat Input field with new border colors */
+        .chat-input-area input {
+            flex-grow: 1;
+            padding: 10px 15px;
+            border: 1px solid #B0C4DE; /* Light steel blue */
+            border-radius: 22px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.3s ease;
+        }
 
-                .chat-input-area input:focus {
-                    border-color: #007bff; /* Blue on focus */
-                }
+        .chat-input-area input:focus {
+            border-color: #5DADE2; /* Sky blue on focus */
+        }
 
-            .chat-input-area button {
-                background-color: #28a745; /* Green */
-                color: white;
-                border: none;
-                border-radius: 20px;
-                padding: 10px 15px;
-                margin-left: 10px;
-                cursor: pointer;
-                font-size: 14px;
-                transition: background-color 0.3s ease, transform 0.2s ease;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }
+        /* UPDATED: Send button with new colors */
+        .chat-input-area button {
+            background-color: #28B463; /* Emerald green */
+            color: white;
+            border: none;
+            border-radius: 22px;
+            padding: 10px 15px;
+            margin-left: 10px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s ease, transform 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
 
-                .chat-input-area button:hover {
-                    background-color: #218838; /* Darker green */
-                    transform: translateY(-1px);
-                }
+        .chat-input-area button:hover {
+            background-color: #229954; /* Darker emerald green */
+            transform: translateY(-1px);
+        }
 
-                .chat-input-area button:disabled {
-                    background-color: #6c757d; /* Grey when disabled */
-                    cursor: not-allowed;
-                }
+        /* UPDATED: Disabled button with new color */
+        .chat-input-area button:disabled {
+            background-color: #AAB7B8; /* Light grey */
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
+    <!-- Center text -->
+    <div class="center-text">Website Client</div>
 
     <!-- Chat Toggle Button -->
     <button id="chat-toggle-button">💬</button>
